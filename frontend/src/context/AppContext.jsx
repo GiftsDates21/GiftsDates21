@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { api } from "../lib/api";
-import { LANGUAGES } from "../lib/i18n";
+import { LANGUAGES, missingStrings } from "../lib/i18n";
+import { setAutoLanguage, prefetch } from "../lib/autoTranslate";
 
 const AppCtx = createContext(null);
 export const useApp = () => useContext(AppCtx);
@@ -30,6 +31,12 @@ export function AppProvider({ children }) {
     const cfg = LANGUAGES.find(l => l.code === lang);
     document.documentElement.setAttribute("dir", cfg?.dir || "ltr");
     document.documentElement.setAttribute("lang", lang);
+    // Auto-translate every page, dropdown, toast, dialog & warning into the chosen language
+    setAutoLanguage(lang);
+    if (lang !== "en") {
+      const id = setTimeout(() => prefetch(missingStrings(lang)), 1500);
+      return () => clearTimeout(id);
+    }
   }, [lang]);
 
   const refreshUser = useCallback(async () => {
@@ -38,7 +45,10 @@ export function AppProvider({ children }) {
     try {
       const { data } = await api.get("/auth/me");
       setUser(data);
-      if (data.language && data.language !== lang) setLang(data.language);
+      // The language chosen on this device (e.g. on the main page) wins; sync it to the account.
+      const chosen = localStorage.getItem("gd_lang");
+      if (chosen && data.language !== chosen) api.patch("/auth/me", { language: chosen }).catch(() => {});
+      else if (!chosen && data.language && data.language !== lang) { setLang(data.language); localStorage.setItem("gd_lang", data.language); }
       refreshSpin();
     } catch { localStorage.removeItem("gd_token"); setUser(null); setSpinEligible(false); }
   }, [lang, refreshSpin]);

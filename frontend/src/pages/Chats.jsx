@@ -148,7 +148,7 @@ export default function Chats() {
                     <div data-testid={`chat-gift-${m.id}`} className="text-center">
                       <div className="text-4xl leading-none">{m.gift_icon}</div>
                       <div className="text-[11px] mt-1 text-amber-300 font-mono-num">{m.from_id === user.id ? t("gift_sent_you", lang) : t("gift_received_chat", lang)} · 🪙 {m.gift_cost}</div>
-                      {m.text && <div className="mt-1 text-xs text-slate-200 italic">“{autoTr && trMap[m.id] && !showOrig[m.id] ? trMap[m.id] : m.text}”</div>}
+                      {m.text && <div translate="no" className="mt-1 text-xs text-slate-200 italic">“{autoTr && trMap[m.id] && !showOrig[m.id] ? trMap[m.id] : m.text}”</div>}
                       {m.from_id !== user.id && !m.thanks && (
                         <div className="mt-2 flex justify-center gap-1">
                           {["❤️", "😘", "🥰"].map(r => <button key={r} type="button" data-testid={`chat-gift-thanks-${m.id}-${r.codePointAt(0)}`} onClick={() => thanks(m.id, r)} className="px-2 py-1 rounded-full bg-white/10 hover:bg-rose-500/30 text-xs transition-colors">{t("thanks", lang)} {r}</button>)}
@@ -160,13 +160,13 @@ export default function Chats() {
                   : m.type === "image" ? <img data-testid={`chat-image-${m.id}`} src={fileUrl(m.image_path)} alt="" className="max-h-64 rounded-xl object-cover cursor-zoom-in" onClick={() => window.open(fileUrl(m.image_path), "_blank")} />
                   : (autoTr && trMap[m.id]) ? (
                     <div data-testid={`chat-translated-${m.id}`}>
-                      <div>{showOrig[m.id] ? m.text : trMap[m.id]}</div>
+                      <div translate="no">{showOrig[m.id] ? m.text : trMap[m.id]}</div>
                       <button type="button" data-testid={`chat-toggle-original-${m.id}`} onClick={() => setShowOrig(o => ({ ...o, [m.id]: !o[m.id] }))}
                         className="mt-1 flex items-center gap-1 text-[10px] text-sky-300/90 hover:text-sky-200">
                         <Languages size={10} /> {showOrig[m.id] ? t("chat_show_translation", lang) : t("chat_translated_show_original", lang)}
                       </button>
                     </div>
-                  ) : m.text}
+                  ) : <span translate="no">{m.text}</span>}
                 </div>
               </div>
             ))}

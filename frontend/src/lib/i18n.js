@@ -1,6 +1,7 @@
 // GiftsDates i18n — worldwide language support
 import WORLD_LANGUAGES from "./languages.json";
 import GENERATED from "./locales";
+import { autoLookup } from "./autoTranslate";
 
 // Full worldwide list drives the app's language switcher.
 export const LANGUAGES = WORLD_LANGUAGES;
@@ -1149,7 +1150,28 @@ export function t(key, lang) {
   // 2. AI-generated worldwide locale file (loaded from ./locales)
   const gen = GENERATED && GENERATED[lang];
   if (gen && gen[key] != null && gen[key] !== "") return gen[key];
-  // 3. English fallback, then the raw key
+  // 3. Live AI translation for any other world language (cached), then base language, then English
+  const en = entry ? entry.en : null;
+  if (en && lang && lang !== "en") {
+    const auto = autoLookup(en, lang);
+    if (auto) return auto;
+    const base = lang.split("-")[0];
+    if (base !== lang && entry[base]) return entry[base];
+    if (base !== lang && GENERATED && GENERATED[base] && GENERATED[base][key]) return GENERATED[base][key];
+  }
   if (entry) return entry.en || key;
   return key;
+}
+
+// English source strings that have no curated / generated translation for `lang`
+// (used to prefetch the full dictionary: warnings, notes, coin purchase & withdrawal texts, etc.)
+export function missingStrings(lang) {
+  if (!lang || lang === "en") return [];
+  const gen = (GENERATED && GENERATED[lang]) || {};
+  const out = [];
+  for (const [key, entry] of Object.entries(T)) {
+    if (entry[lang] || (gen[key] != null && gen[key] !== "")) continue;
+    if (entry.en) out.push(entry.en);
+  }
+  return out;
 }

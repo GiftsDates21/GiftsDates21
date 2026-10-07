@@ -28,7 +28,7 @@ export default function Nav() {
 
   const NavLink = ({ to, icon: Icon, label, testid, badge }) => (
     <Link to={to} data-testid={testid} className={`relative flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all ${loc.pathname === to ? "bg-rose-500/15 text-rose-300 border border-rose-500/30" : "text-slate-300 hover:bg-white/5 hover:text-white"}`}>
-      <Icon size={16} /> <span className="hidden md:inline">{label}</span>
+      <Icon size={16} className="shrink-0" /> <span className="hidden md:inline whitespace-nowrap max-w-[96px] lg:max-w-[120px] truncate" title={label}>{label}</span>
       {badge > 0 && <span data-testid="nav-vip-bookings-badge" className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-rose-500 text-white text-[10px] font-semibold flex items-center justify-center">{badge}</span>}
     </Link>
   );
@@ -41,7 +41,7 @@ export default function Nav() {
             <img src="/brand-logo.svg" alt="GiftsDates" className="w-9 h-9 object-contain logo-pulse" />
           </div>
           <div className="leading-none">
-            <span className="font-serif-luxe text-2xl font-bold tracking-tight gold-text">GiftsDates</span>
+            <span translate="no" className="font-serif-luxe text-2xl font-bold tracking-tight gold-text">GiftsDates</span>
             <span className="hidden sm:block text-[9px] font-semibold tracking-[0.25em] text-[#D4AF37]/80 uppercase mt-0.5">Luxury Dating</span>
           </div>
         </Link>

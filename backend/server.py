@@ -644,6 +644,7 @@ class MessageReq(BaseModel):
 async def _startup():
     init_storage()
     await db.users.create_index("email", unique=True)
+    await db.ui_translations.create_index([("lang", 1), ("h", 1)], unique=True)
     await db.users.create_index("id", unique=True)
     await db.users.create_index("phone")
     await db.users.create_index("created_at")
@@ -701,6 +702,8 @@ class SupportChatReq(BaseModel):
 
 LANG_NAMES = {"ru": "Russian", "en": "English", "es": "Spanish", "fr": "French", "de": "German",
               "pt": "Portuguese", "zh": "Chinese", "hi": "Hindi", "bn": "Bengali", "ur": "Urdu", "ar": "Arabic"}
+from world_languages import WORLD_LANG_NAMES
+LANG_NAMES = {**WORLD_LANG_NAMES, **LANG_NAMES}
 
 class SupportTicketReq(BaseModel):
     name: Optional[str] = ""
@@ -1987,6 +1990,77 @@ async def translate_conversation(cid: str, req: TranslateReq, user=Depends(get_c
     # Only return real translations (skip messages already in the reader's language)
     return {m["id"]: m["translations"][code] for m in done
             if (m.get("translations") or {}).get(code) and m["translations"][code].strip() != (m.get("text") or "").strip()}
+
+# ---------- Site-wide UI auto-translation (any world language, cached in Mongo) ----------
+import hashlib as _hashlib
+
+class UiTranslateReq(BaseModel):
+    lang: str
+    texts: List[str]
+
+_UI_SYS = ("You are a professional localization engine for GiftsDates, a luxury international dating website. "
+           "Translate each UI string (buttons, menus, dropdown options, labels, headings, notices, paragraphs) into {lang}. "
+           "Rules: keep it natural and concise like real app UI; preserve placeholders such as {{o}}, {{n}}, {{name}}, numbers, "
+           "currency symbols, emojis, punctuation, URLs and e-mail addresses exactly; keep the brand 'GiftsDates' and people's names untranslated; "
+           "if a string is already in {lang} or is a proper name/code, return it unchanged. "
+           "Reply ONLY with a JSON object mapping each id to its translation, no commentary.")
+
+_ui_llm_sem = asyncio.Semaphore(1)  # LLM key allows one concurrent request — serialize calls
+
+async def _ui_llm_chunk(chunk: List[tuple], lang_name: str) -> dict:
+    import json as _json
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    key = os.environ.get("EMERGENT_LLM_KEY")
+    if not key: return {}
+    payload = _json.dumps({str(i): t for i, t in chunk}, ensure_ascii=False)
+    for attempt in range(5):
+        try:
+            async with _ui_llm_sem:
+                chat = LlmChat(api_key=key, session_id=f"ui-{uuid.uuid4()}", system_message=_UI_SYS.format(lang=lang_name)).with_model("gemini", "gemini-3-flash-preview")
+                raw = (await chat.send_message(UserMessage(text=payload)) or "").strip()
+            data = _json.loads(raw[raw.find("{"): raw.rfind("}") + 1])
+            return {int(k): str(v) for k, v in data.items() if str(k).isdigit() and v is not None}
+        except Exception as e:
+            msg = str(e)
+            logging.error(f"ui translate error (attempt {attempt + 1}): {msg[:160]}")
+            if "429" in msg or "concurrent" in msg.lower() or "rate" in msg.lower():
+                await asyncio.sleep(1.5 * (attempt + 1))
+            elif attempt >= 1:
+                break
+    return {}
+
+@api.post("/i18n/translate")
+async def ui_translate(req: UiTranslateReq):
+    """Translate UI strings into any world language. Shared cache, so each string is only translated once per language."""
+    code = (req.lang or "en").strip()[:12]
+    if not re.fullmatch(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,4})?", code): raise HTTPException(400, "BAD_LANG")
+    texts = [str(t)[:800] for t in (req.texts or [])][:150]
+    if code.lower() == "en" or not texts: return {"translations": texts}
+    lang_name = LANG_NAMES.get(code) or LANG_NAMES.get(code.split("-")[0]) or f"the language with BCP-47 code '{code}'"
+    hashes = [_hashlib.sha1(t.encode("utf-8")).hexdigest() for t in texts]
+    found = {}
+    async for d in db.ui_translations.find({"lang": code, "h": {"$in": list(set(hashes))}}, {"_id": 0, "h": 1, "out": 1}):
+        found[d["h"]] = d["out"]
+    missing, seen = [], set()
+    for i, (t, h) in enumerate(zip(texts, hashes)):
+        if h not in found and h not in seen:
+            seen.add(h); missing.append((i, t))
+    if missing:
+        chunks = [missing[i:i + 60] for i in range(0, len(missing), 60)]
+        results = [await _ui_llm_chunk(c, lang_name) for c in chunks]
+        now = datetime.now(timezone.utc).isoformat()
+        for chunk, res in zip(chunks, results):
+            if not isinstance(res, dict): continue
+            for i, t in chunk:
+                out = res.get(i)
+                if not out: continue
+                found[hashes[i]] = out
+                try:
+                    await db.ui_translations.update_one({"lang": code, "h": hashes[i]},
+                        {"$set": {"lang": code, "h": hashes[i], "src": t, "out": out, "at": now}}, upsert=True)
+                except Exception:
+                    pass
+    return {"translations": [found.get(h, t) for t, h in zip(texts, hashes)]}
 
 # ---------- Chat ----------
 @api.get("/conversations/{cid}/messages")

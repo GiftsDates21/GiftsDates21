@@ -105,6 +105,20 @@
 user_problem_statement: "Verify five advanced filters on Browse page are MULTI-SELECT dropdowns: Kids, Smoking, Drinking, Religion, Zodiac (in Full Premium filters section)."
 
 backend:
+  - task: "Site-wide UI auto-translation endpoint POST /api/i18n/translate"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Public endpoint {lang, texts[]} -> {translations[] same order}. Any BCP-47-ish code (qu, yo, pt-BR...), en returns input unchanged, bad code -> 400. Gemini via EMERGENT_LLM_KEY, serialized (key allows 1 concurrent request), cached in db.ui_translations (lang,h sha1). Max 150 texts, 800 chars each. Placeholders like {o} must be preserved. Also LANG_NAMES now includes 228 world languages (world_languages.py); PATCH /api/auth/me accepts any language code."
+        -working: true
+        -agent: "testing"
+        -comment: "VERIFIED: All 11 tests passed (7 translation + 4 auth). Translation endpoint working correctly: (1) Swahili translation - texts translated to non-English, placeholder {o} preserved in 'Waiting for {o} to choose a date option.' -> 'Inasubiri {o} achague chaguo la miadi.', brand 'GiftsDates' unchanged. (2) Caching works - repeat request fast (0.13s), identical results. (3) English 'en' returns input unchanged. (4) Invalid lang '123!!' returns 400 BAD_LANG. (5) Regional code 'pt-BR' works correctly with Portuguese translations. (6) Empty texts [] returns empty array. (7) Duplicate strings handled correctly (same translation in both positions). Auth tests: (8) User registration successful, (9) PATCH /api/auth/me with language='qu' persists, (10) GET /api/auth/me confirms persistence, (11) POST /api/auth/login works (regression test passed). Test user: test_i18n_1791340871_1772@example.com. All requirements verified successfully."
   - task: "Health check endpoint"
     implemented: true
     working: true
@@ -267,17 +281,12 @@ frontend:
 
 metadata:
   created_by: "testing_agent"
-  version: "1.4"
-  test_sequence: 5
+  version: "1.5"
+  test_sequence: 6
   run_ui: true
 
 test_plan:
-  current_focus:
-    - "Browse page - Kids multi-select filter"
-    - "Browse page - Smoking multi-select filter"
-    - "Browse page - Drinking multi-select filter"
-    - "Browse page - Religion multi-select filter"
-    - "Browse page - Zodiac multi-select filter"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -293,3 +302,5 @@ agent_communication:
     message: "Completed backend smoke test for bust_type profile field. Test verified complete round-trip persistence: (1) Registered new user testuser_20261007012535@example.com with JWT token, (2) PATCH /api/auth/me with {bust_type: 'natural'} returned 200 and field was set, (3) GET /api/auth/me confirmed bust_type='natural', (4) PATCH /api/auth/me with {bust_type: 'enhanced'} returned 200 and field was updated, (5) GET /api/auth/me confirmed bust_type='enhanced'. All 5 tests passed (5/5). The bust_type field is correctly defined in ProfileUpdate model (server.py line 530) and properly handled by the PATCH /api/auth/me endpoint (line 955). Field persists correctly in MongoDB and is returned in profile responses."
   - agent: "testing"
     message: "Completed backend smoke test for profile/VIP field changes. TWO TESTS EXECUTED: (1) Profile dick_girth field - PASSED: PATCH /api/auth/me with {dick_girth: 'Thick'} returned 200, GET /api/auth/me confirmed persistence. Field defined in ProfileUpdate model (line 532). (2) VIP breast_size as LIST - PASSED: PUT /api/vip/profile with breast_size=['A', 'C', 'Natural'] returned 200 and saved correctly, GET /api/auth/me confirmed vip.breast_size as list with order preserved, empty list [] also saves without error. Field defined in VipProfileReq model (line 2731) as List[str]. Both tests passed (2/2). No Stripe/Twilio/email tested as requested."
+  - agent: "testing"
+    message: "Completed comprehensive testing of POST /api/i18n/translate endpoint and auth regression. ALL 11 TESTS PASSED (7 translation + 4 auth): Translation tests verified: (1) Swahili translation works correctly with non-English output, (2) Placeholder {o} preserved in translated text, (3) Brand name 'GiftsDates' unchanged, (4) Caching works (0.13s fast response, identical results), (5) English 'en' returns input unchanged, (6) Invalid lang '123!!' returns 400 BAD_LANG, (7) Regional code 'pt-BR' works with Portuguese translations, (8) Empty texts [] returns empty array, (9) Duplicate strings handled correctly. Auth tests verified: (10) User registration works, (11) PATCH /api/auth/me with language='qu' persists correctly, (12) GET /api/auth/me confirms persistence, (13) POST /api/auth/login works (regression passed). Test user: test_i18n_1791340871_1772@example.com. Translation endpoint fully functional with proper serialization, caching, placeholder preservation, and brand name protection. No issues found."
