@@ -2420,25 +2420,111 @@ async def gifts_sent(user=Depends(get_current_user)):
     return await db.transactions.find({"from_id": user["id"], "type": "gift"}, {"_id": 0}).sort("created_at", -1).to_list(200)
 
 # ---------- Video calls ----------
+RING_SECONDS = 30
+
+def _online(u: dict) -> bool:
+    ls = u.get("last_seen")
+    return bool(ls and ls > (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat())
+
+def _call_out(c: dict) -> dict:
+    return {k: c.get(k) for k in ("id", "caller_id", "callee_id", "caller", "callee", "minutes", "rate", "cost", "status", "created_at", "accepted_at", "ended_at", "reason")}
+
+async def _expire_ringing(c: dict) -> dict:
+    if c.get("status") == "ringing" and _pdt(c["created_at"]) and (_now() - _pdt(c["created_at"])).total_seconds() > RING_SECONDS:
+        await db.calls.update_one({"id": c["id"], "status": "ringing"}, {"$set": {"status": "missed", "ended_at": _iso()}})
+        c["status"] = "missed"
+    return c
+
+async def _my_call(cid: str, user: dict) -> dict:
+    c = await db.calls.find_one({"id": cid}, {"_id": 0})
+    if not c or user["id"] not in (c["caller_id"], c["callee_id"]): raise HTTPException(404, "CALL_NOT_FOUND")
+    return await _expire_ringing(c)
+
 @api.post("/videocalls/start")
 async def start_call(req: VideoCallReq, user=Depends(get_current_user)):
+    """Ring the recipient. Nothing is charged until they accept (with their camera allowed)."""
     target = await db.users.find_one({"id": req.target_id})
     if not target: raise HTTPException(404, "Recipient not found")
+    if target["id"] == user["id"]: raise HTTPException(400, "CANNOT_CALL_SELF")
     if target.get("video_calls_enabled") is False: raise HTTPException(403, "VIDEO_CALLS_DISABLED")
-    # Video calls are only allowed when the recipient is currently online (seen within the last 5 minutes)
-    _ls = target.get("last_seen")
-    _online = bool(_ls and _ls > (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat())
-    if not _online: raise HTTPException(403, "USER_OFFLINE")
+    if not _online(target): raise HTTPException(403, "USER_OFFLINE")
+    minutes = max(1, min(int(req.minutes or 1), 60))
     rate = max(target.get("video_rate") or 0, (await get_settings())["video_rate"])
-    cost = req.minutes * rate
+    cost = minutes * rate
     if (user.get("coins", 0) + user.get("withdrawable", 0)) < cost: raise HTTPException(400, "Insufficient coins")
-    now = datetime.now(timezone.utc).isoformat()
-    await spend_coins(user["id"], cost)
-    net = cost
-    await db.users.update_one({"id": req.target_id}, {"$inc": {"withdrawable": net}})
-    call_id = str(uuid.uuid4())
-    await db.transactions.insert_one({"id": call_id, "type": "videocall", "from_id": user["id"], "to_id": req.target_id, "minutes": req.minutes, "cost": cost, "rate": rate, "net": net, "created_at": now})
-    return {"call_id": call_id, "cost": cost, "minutes": req.minutes, "rate": rate}
+    # Cancel any older ringing calls from this caller
+    await db.calls.update_many({"caller_id": user["id"], "status": "ringing"}, {"$set": {"status": "cancelled", "ended_at": _iso()}})
+    c = {"id": str(uuid.uuid4()), "caller_id": user["id"], "callee_id": target["id"],
+         "caller": {"id": user["id"], "name": user.get("name"), "photo": (user.get("photos") or [None])[0]},
+         "callee": {"id": target["id"], "name": target.get("name"), "photo": (target.get("photos") or [None])[0]},
+         "minutes": minutes, "rate": rate, "cost": cost, "status": "ringing", "created_at": _iso()}
+    await db.calls.insert_one(dict(c))
+    return _call_out(c)
+
+@api.get("/videocalls/incoming")
+async def incoming_calls(user=Depends(get_current_user)):
+    since = (_now() - timedelta(seconds=RING_SECONDS)).isoformat()
+    docs = await db.calls.find({"callee_id": user["id"], "status": "ringing", "created_at": {"$gt": since}}, {"_id": 0}).sort("created_at", -1).to_list(3)
+    return [_call_out(c) for c in docs]
+
+@api.get("/videocalls/{cid}")
+async def get_call(cid: str, user=Depends(get_current_user)):
+    return _call_out(await _my_call(cid, user))
+
+@api.post("/videocalls/{cid}/accept")
+async def accept_call(cid: str, user=Depends(get_current_user)):
+    """Callee accepts (only after allowing camera). The caller is charged now."""
+    c = await _my_call(cid, user)
+    if c["callee_id"] != user["id"]: raise HTTPException(403, "ONLY_RECEIVER_CAN_ACCEPT")
+    if c["status"] != "ringing": raise HTTPException(409, f"CALL_{c['status'].upper()}")
+    caller = await db.users.find_one({"id": c["caller_id"]})
+    if not caller or (caller.get("coins", 0) + caller.get("withdrawable", 0)) < c["cost"]:
+        await db.calls.update_one({"id": cid}, {"$set": {"status": "failed", "reason": "CALLER_INSUFFICIENT_COINS", "ended_at": _iso()}})
+        raise HTTPException(400, "CALLER_INSUFFICIENT_COINS")
+    r = await db.calls.update_one({"id": cid, "status": "ringing"}, {"$set": {"status": "active", "accepted_at": _iso()}})
+    if not r.modified_count: raise HTTPException(409, "CALL_NOT_RINGING")
+    await spend_coins(c["caller_id"], c["cost"])
+    await db.users.update_one({"id": c["callee_id"]}, {"$inc": {"withdrawable": c["cost"]}})
+    await db.transactions.insert_one({"id": cid, "type": "videocall", "from_id": c["caller_id"], "to_id": c["callee_id"], "minutes": c["minutes"],
+                                      "cost": c["cost"], "rate": c["rate"], "net": c["cost"], "created_at": _iso()})
+    c["status"] = "active"
+    return _call_out(c)
+
+@api.post("/videocalls/{cid}/decline")
+async def decline_call(cid: str, user=Depends(get_current_user)):
+    c = await _my_call(cid, user)
+    if c["status"] == "ringing":
+        st = "declined" if user["id"] == c["callee_id"] else "cancelled"
+        await db.calls.update_one({"id": cid, "status": "ringing"}, {"$set": {"status": st, "ended_at": _iso()}})
+    return {"ok": True}
+
+@api.post("/videocalls/{cid}/end")
+async def end_call(cid: str, user=Depends(get_current_user)):
+    c = await _my_call(cid, user)
+    if c["status"] in ("ringing", "active"):
+        await db.calls.update_one({"id": cid}, {"$set": {"status": "ended" if c["status"] == "active" else "cancelled", "ended_at": _iso(), "ended_by": user["id"]}})
+    return {"ok": True}
+
+class CallSignalReq(BaseModel):
+    type: str
+    data: dict
+
+@api.post("/videocalls/{cid}/signal")
+async def call_signal(cid: str, req: CallSignalReq, user=Depends(get_current_user)):
+    """WebRTC signaling relay (offer / answer / ICE candidates) between the two members of an active call."""
+    c = await _my_call(cid, user)
+    if c["status"] != "active": raise HTTPException(409, "CALL_NOT_ACTIVE")
+    if req.type not in ("offer", "answer", "ice"): raise HTTPException(400, "BAD_SIGNAL")
+    to_id = c["callee_id"] if user["id"] == c["caller_id"] else c["caller_id"]
+    await db.call_signals.insert_one({"id": str(uuid.uuid4()), "call_id": cid, "from_id": user["id"], "to_id": to_id,
+                                      "type": req.type, "data": req.data, "at": _iso(), "ts": _now().timestamp()})
+    return {"ok": True}
+
+@api.get("/videocalls/{cid}/signals")
+async def call_signals(cid: str, after: float = 0, user=Depends(get_current_user)):
+    c = await _my_call(cid, user)
+    sigs = await db.call_signals.find({"call_id": cid, "to_id": user["id"], "ts": {"$gt": after}}, {"_id": 0, "type": 1, "data": 1, "ts": 1}).sort("ts", 1).to_list(200)
+    return {"status": c["status"], "signals": sigs}
 
 # ---------- Date bookings with escrow ----------
 DATE_SLOT_HOURS = 2.5  # each date lasts 2.5 hours

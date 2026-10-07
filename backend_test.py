@@ -1,594 +1,572 @@
 #!/usr/bin/env python3
 """
-Backend test for i18n admin & bundle endpoints
-Tests the pre-translate job, bundle endpoints, and preview-notification
+Backend test for video call functionality
+Tests all scenarios from the review request
 """
-
 import requests
 import time
-import json
-import sys
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+from pymongo import MongoClient
+import os
 
-# Configuration
-with open('/app/frontend/.env', 'r') as f:
-    for line in f:
-        if line.startswith('REACT_APP_BACKEND_URL='):
-            BASE_URL = line.strip().split('=', 1)[1]
-            break
+# Load environment variables
+BACKEND_URL = "https://gifts-dates.preview.emergentagent.com/api"
+MONGO_URL = "mongodb://localhost:27017"
+DB_NAME = "test_database"
 
-API_URL = f"{BASE_URL}/api"
+# Connect to MongoDB
+client = MongoClient(MONGO_URL)
+db = client[DB_NAME]
 
-# Read admin token
-with open('/app/.adm_tok', 'r') as f:
-    ADMIN_TOKEN = f.read().strip()
+def log(msg):
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
-print(f"🔧 Testing i18n endpoints at: {API_URL}")
-print(f"🔑 Admin token loaded: {ADMIN_TOKEN[:20]}...")
-print("=" * 80)
+def register_user(email, password, name, gender, age, interested_in, city, country):
+    """Register a new user"""
+    resp = requests.post(f"{BACKEND_URL}/auth/register", json={
+        "email": email,
+        "password": password,
+        "name": name,
+        "gender": gender,
+        "age": age,
+        "interested_in": interested_in,
+        "city": city,
+        "country": country
+    })
+    if resp.status_code != 200:
+        log(f"❌ Registration failed for {email}: {resp.status_code} {resp.text}")
+        return None
+    data = resp.json()
+    log(f"✅ Registered user: {email}")
+    return {"token": data["token"], "user_id": data["user"]["id"], "email": email}
 
-# Test counters
-tests_passed = 0
-tests_failed = 0
-test_results = []
-
-def log_test(name, passed, details=""):
-    global tests_passed, tests_failed
-    status = "✅ PASS" if passed else "❌ FAIL"
-    print(f"{status}: {name}")
-    if details:
-        print(f"   {details}")
-    test_results.append({"name": name, "passed": passed, "details": details})
-    if passed:
-        tests_passed += 1
+def setup_user_for_videocall(user_id, coins=500, online=True, video_enabled=True):
+    """Setup user in database for video call testing"""
+    update = {
+        "coins": coins,
+        "video_calls_enabled": video_enabled
+    }
+    if online:
+        update["last_seen"] = datetime.now(timezone.utc).isoformat()
     else:
-        tests_failed += 1
+        # Set last_seen to 1 hour ago for offline test
+        update["last_seen"] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    
+    db.users.update_one({"id": user_id}, {"$set": update})
+    log(f"✅ Setup user {user_id}: coins={coins}, online={online}, video_enabled={video_enabled}")
 
-def test_admin_status_with_progress():
-    """Test 1: GET /api/admin/i18n/status with admin token, check twice for progress"""
-    print("\n📊 Test 1: Admin i18n status endpoint with progress tracking")
+def cleanup_test_users(emails):
+    """Clean up test users from database"""
+    for email in emails:
+        db.users.delete_many({"email": email})
+        db.new_users_list.delete_many({"email": email})
+    log(f"✅ Cleaned up {len(emails)} test users")
+
+def run_tests():
+    """Run all video call tests"""
+    test_emails = []
+    all_passed = True
     
     try:
-        # First call
-        headers = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
-        resp1 = requests.get(f"{API_URL}/admin/i18n/status", headers=headers, timeout=30)
+        # Create test users
+        timestamp = int(time.time())
+        caller_email = f"test_caller_{timestamp}@example.com"
+        callee_email = f"test_callee_{timestamp}@example.com"
+        third_user_email = f"test_third_{timestamp}@example.com"
         
-        if resp1.status_code != 200:
-            log_test("Admin status endpoint (first call)", False, f"Expected 200, got {resp1.status_code}: {resp1.text}")
-            return
+        test_emails = [caller_email, callee_email, third_user_email]
         
-        data1 = resp1.json()
-        print(f"   First call response: {json.dumps(data1, indent=2)[:500]}...")
+        log("\n=== SETUP: Creating test users ===")
+        caller = register_user(caller_email, "Password123!", "Alice Caller", "female", 28, "male", "New York", "USA")
+        callee = register_user(callee_email, "Password123!", "Bob Callee", "male", 30, "female", "Los Angeles", "USA")
+        third_user = register_user(third_user_email, "Password123!", "Charlie Third", "male", 25, "female", "Chicago", "USA")
         
-        # Validate structure
-        if "job" not in data1:
-            log_test("Admin status endpoint structure", False, "Missing 'job' key in response")
-            return
+        if not caller or not callee or not third_user:
+            log("❌ Failed to create test users")
+            return False
         
-        job1 = data1["job"]
+        # Setup users for video calls
+        setup_user_for_videocall(caller["user_id"], coins=500, online=True, video_enabled=True)
+        setup_user_for_videocall(callee["user_id"], coins=0, online=True, video_enabled=True)
+        setup_user_for_videocall(third_user["user_id"], coins=100, online=True, video_enabled=True)
         
-        # Check job.running is true
-        if not job1.get("running"):
-            log_test("Job running status", False, f"Expected job.running=true, got {job1.get('running')}")
-            return
+        # Set default video_rate in settings
+        db.settings.update_one({}, {"$set": {"video_rate": 10}}, upsert=True)
         
-        log_test("Job running status", True, "job.running is true")
-        
-        # Check job.langs has 14 languages (langs is a dict, not a list)
-        langs1 = job1.get("langs", {})
-        if not isinstance(langs1, dict):
-            log_test("Job languages type", False, f"Expected dict, got {type(langs1)}")
-            return
-        
-        if len(langs1) != 14:
-            log_test("Job languages count", False, f"Expected 14 languages, got {len(langs1)}")
-            return
-        
-        log_test("Job languages count", True, f"Found {len(langs1)} languages")
-        
-        # Check expected language codes
-        expected_langs = ['es', 'fr', 'de', 'pt', 'ru', 'zh', 'ar', 'hi', 'ja', 'ko', 'it', 'tr', 'uk', 'pl']
-        lang_codes = list(langs1.keys())
-        
-        missing_langs = [l for l in expected_langs if l not in lang_codes]
-        if missing_langs:
-            log_test("Expected language codes", False, f"Missing languages: {missing_langs}")
-            return
-        
-        log_test("Expected language codes", True, f"All 14 expected languages present: {', '.join(expected_langs)}")
-        
-        # Check each language has status/total/done/seeded
-        all_have_fields = True
-        for lang_code, lang_data in langs1.items():
-            required_fields = ["status", "total", "done", "seeded"]
-            missing = [f for f in required_fields if f not in lang_data]
-            if missing:
-                log_test("Language structure", False, f"Language {lang_code} missing fields: {missing}")
-                all_have_fields = False
-                break
-        
-        if all_have_fields:
-            log_test("Language structure", True, "All languages have status/total/done/seeded fields")
-        
-        # Check total_sources > 1000
-        total_sources = data1.get("total_sources", 0)
-        if total_sources <= 1000:
-            log_test("Total sources count", False, f"Expected total_sources > 1000, got {total_sources}")
-            return
-        
-        log_test("Total sources count", True, f"total_sources = {total_sources} (> 1000)")
-        
-        # Check coverage list of 14
-        coverage = data1.get("coverage", [])
-        if len(coverage) != 14:
-            log_test("Coverage list count", False, f"Expected 14 coverage items, got {len(coverage)}")
-            return
-        
-        log_test("Coverage list count", True, f"Found {len(coverage)} coverage items")
-        
-        # Wait 20 seconds and call again
-        print(f"\n   ⏳ Waiting 20 seconds to check progress...")
-        time.sleep(20)
-        
-        resp2 = requests.get(f"{API_URL}/admin/i18n/status", headers=headers, timeout=30)
-        
-        if resp2.status_code != 200:
-            log_test("Admin status endpoint (second call)", False, f"Expected 200, got {resp2.status_code}")
-            return
-        
-        data2 = resp2.json()
-        job2 = data2["job"]
-        langs2 = job2.get("langs", {})
-        
-        # Compare progress - check if any done counts increased
-        progress_detected = False
-        for lang_code in expected_langs:
-            lang1 = langs1.get(lang_code, {})
-            lang2 = langs2.get(lang_code, {})
-            
-            if lang1 and lang2:
-                done1 = lang1.get("done", 0)
-                done2 = lang2.get("done", 0)
-                
-                if done2 > done1:
-                    progress_detected = True
-                    print(f"   📈 Progress detected for {lang_code}: {done1} -> {done2}")
-        
-        if progress_detected:
-            log_test("Progress tracking", True, "Done counts increased between calls")
+        log("\n=== TEST 1: Start call (minutes=2) -> status 'ringing', cost=20, caller coins NOT reduced ===")
+        resp = requests.post(f"{BACKEND_URL}/videocalls/start", 
+                            headers={"Authorization": f"Bearer {caller['token']}"},
+                            json={"target_id": callee["user_id"], "minutes": 2})
+        if resp.status_code != 200:
+            log(f"❌ Start call failed: {resp.status_code} {resp.text}")
+            all_passed = False
         else:
-            # Check if job completed or status changed
-            if not job2.get("running"):
-                log_test("Progress tracking", True, "Job completed between calls (no longer running)")
+            call_data = resp.json()
+            call_id = call_data["id"]
+            if call_data["status"] != "ringing":
+                log(f"❌ Expected status 'ringing', got '{call_data['status']}'")
+                all_passed = False
+            elif call_data["cost"] != 20:
+                log(f"❌ Expected cost 20, got {call_data['cost']}")
+                all_passed = False
             else:
-                # Progress might be slow, check if any status changed
-                status_changed = False
-                for lang_code in expected_langs:
-                    lang1 = langs1.get(lang_code, {})
-                    lang2 = langs2.get(lang_code, {})
+                # Check caller coins NOT reduced yet
+                caller_db = db.users.find_one({"id": caller["user_id"]})
+                if caller_db["coins"] != 500:
+                    log(f"❌ Caller coins should still be 500, got {caller_db['coins']}")
+                    all_passed = False
+                else:
+                    log(f"✅ Call started: id={call_id}, status=ringing, cost=20, caller coins=500 (not reduced)")
+        
+        log("\n=== TEST 2: Callee GET incoming lists it; caller's incoming is empty; third user 404 ===")
+        # Callee incoming
+        resp = requests.get(f"{BACKEND_URL}/videocalls/incoming",
+                           headers={"Authorization": f"Bearer {callee['token']}"})
+        if resp.status_code != 200:
+            log(f"❌ Callee incoming failed: {resp.status_code} {resp.text}")
+            all_passed = False
+        else:
+            incoming = resp.json()
+            if len(incoming) != 1 or incoming[0]["id"] != call_id:
+                log(f"❌ Callee should see 1 incoming call, got {len(incoming)}")
+                all_passed = False
+            else:
+                log(f"✅ Callee sees incoming call: {call_id}")
+        
+        # Caller incoming (should be empty)
+        resp = requests.get(f"{BACKEND_URL}/videocalls/incoming",
+                           headers={"Authorization": f"Bearer {caller['token']}"})
+        if resp.status_code != 200:
+            log(f"❌ Caller incoming failed: {resp.status_code} {resp.text}")
+            all_passed = False
+        else:
+            incoming = resp.json()
+            if len(incoming) != 0:
+                log(f"❌ Caller should see 0 incoming calls, got {len(incoming)}")
+                all_passed = False
+            else:
+                log(f"✅ Caller incoming is empty")
+        
+        # Third user GET call (should be 404)
+        resp = requests.get(f"{BACKEND_URL}/videocalls/{call_id}",
+                           headers={"Authorization": f"Bearer {third_user['token']}"})
+        if resp.status_code != 404:
+            log(f"❌ Third user should get 404, got {resp.status_code}")
+            all_passed = False
+        else:
+            log(f"✅ Third user gets 404 for call")
+        
+        log("\n=== TEST 3: Caller tries accept -> 403; Callee accept -> 200, status 'active', coins reduced ===")
+        # Caller tries to accept (should fail)
+        resp = requests.post(f"{BACKEND_URL}/videocalls/{call_id}/accept",
+                            headers={"Authorization": f"Bearer {caller['token']}"})
+        if resp.status_code != 403:
+            log(f"❌ Caller accept should return 403, got {resp.status_code}")
+            all_passed = False
+        else:
+            log(f"✅ Caller cannot accept (403)")
+        
+        # Callee accepts
+        resp = requests.post(f"{BACKEND_URL}/videocalls/{call_id}/accept",
+                            headers={"Authorization": f"Bearer {callee['token']}"})
+        if resp.status_code != 200:
+            log(f"❌ Callee accept failed: {resp.status_code} {resp.text}")
+            all_passed = False
+        else:
+            call_data = resp.json()
+            if call_data["status"] != "active":
+                log(f"❌ Expected status 'active', got '{call_data['status']}'")
+                all_passed = False
+            else:
+                # Check caller coins reduced by 20
+                caller_db = db.users.find_one({"id": caller["user_id"]})
+                caller_total = caller_db.get("coins", 0) + caller_db.get("withdrawable", 0)
+                if caller_total != 480:  # 500 - 20
+                    log(f"❌ Caller total should be 480, got {caller_total}")
+                    all_passed = False
+                else:
+                    # Check callee withdrawable increased by 20
+                    callee_db = db.users.find_one({"id": callee["user_id"]})
+                    if callee_db.get("withdrawable", 0) != 20:
+                        log(f"❌ Callee withdrawable should be 20, got {callee_db.get('withdrawable', 0)}")
+                        all_passed = False
+                    else:
+                        # Check transaction exists
+                        txn = db.transactions.find_one({"id": call_id, "type": "videocall"})
+                        if not txn:
+                            log(f"❌ Transaction not found for call {call_id}")
+                            all_passed = False
+                        else:
+                            log(f"✅ Call accepted: status=active, caller charged 20, callee +20 withdrawable, transaction created")
+        
+        log("\n=== TEST 4: Signals - offer/answer/ice with timestamps ===")
+        # Caller posts offer
+        resp = requests.post(f"{BACKEND_URL}/videocalls/{call_id}/signal",
+                            headers={"Authorization": f"Bearer {caller['token']}"},
+                            json={"type": "offer", "data": {"type": "offer", "sdp": "x"}})
+        if resp.status_code != 200:
+            log(f"❌ Caller signal offer failed: {resp.status_code} {resp.text}")
+            all_passed = False
+        else:
+            log(f"✅ Caller posted offer signal")
+        
+        # Callee gets signals
+        resp = requests.get(f"{BACKEND_URL}/videocalls/{call_id}/signals?after=0",
+                           headers={"Authorization": f"Bearer {callee['token']}"})
+        if resp.status_code != 200:
+            log(f"❌ Callee get signals failed: {resp.status_code} {resp.text}")
+            all_passed = False
+        else:
+            signals_data = resp.json()
+            if len(signals_data["signals"]) != 1:
+                log(f"❌ Callee should see 1 signal, got {len(signals_data['signals'])}")
+                all_passed = False
+            elif signals_data["signals"][0]["type"] != "offer":
+                log(f"❌ Expected signal type 'offer', got '{signals_data['signals'][0]['type']}'")
+                all_passed = False
+            elif "ts" not in signals_data["signals"][0]:
+                log(f"❌ Signal should have 'ts' field")
+                all_passed = False
+            else:
+                last_ts = signals_data["signals"][0]["ts"]
+                log(f"✅ Callee received offer signal with ts={last_ts}")
+        
+        # Caller gets signals (should be empty)
+        resp = requests.get(f"{BACKEND_URL}/videocalls/{call_id}/signals?after=0",
+                           headers={"Authorization": f"Bearer {caller['token']}"})
+        if resp.status_code != 200:
+            log(f"❌ Caller get signals failed: {resp.status_code} {resp.text}")
+            all_passed = False
+        else:
+            signals_data = resp.json()
+            if len(signals_data["signals"]) != 0:
+                log(f"❌ Caller should see 0 signals, got {len(signals_data['signals'])}")
+                all_passed = False
+            else:
+                log(f"✅ Caller signals empty (correct)")
+        
+        # Callee posts answer and ice
+        resp = requests.post(f"{BACKEND_URL}/videocalls/{call_id}/signal",
+                            headers={"Authorization": f"Bearer {callee['token']}"},
+                            json={"type": "answer", "data": {"type": "answer", "sdp": "y"}})
+        if resp.status_code != 200:
+            log(f"❌ Callee signal answer failed: {resp.status_code} {resp.text}")
+            all_passed = False
+        
+        resp = requests.post(f"{BACKEND_URL}/videocalls/{call_id}/signal",
+                            headers={"Authorization": f"Bearer {callee['token']}"},
+                            json={"type": "ice", "data": {"candidate": "ice-candidate"}})
+        if resp.status_code != 200:
+            log(f"❌ Callee signal ice failed: {resp.status_code} {resp.text}")
+            all_passed = False
+        else:
+            log(f"✅ Callee posted answer and ice signals")
+        
+        # Caller receives both in ts order
+        resp = requests.get(f"{BACKEND_URL}/videocalls/{call_id}/signals?after=0",
+                           headers={"Authorization": f"Bearer {caller['token']}"})
+        if resp.status_code != 200:
+            log(f"❌ Caller get signals failed: {resp.status_code} {resp.text}")
+            all_passed = False
+        else:
+            signals_data = resp.json()
+            if len(signals_data["signals"]) != 2:
+                log(f"❌ Caller should see 2 signals, got {len(signals_data['signals'])}")
+                all_passed = False
+            elif signals_data["signals"][0]["type"] != "answer" or signals_data["signals"][1]["type"] != "ice":
+                log(f"❌ Expected signals in order: answer, ice")
+                all_passed = False
+            elif signals_data["signals"][0]["ts"] >= signals_data["signals"][1]["ts"]:
+                log(f"❌ Signals should be in ts order")
+                all_passed = False
+            else:
+                last_ts = signals_data["signals"][1]["ts"]
+                log(f"✅ Caller received answer and ice signals in ts order")
+                
+                # GET with after=last_ts should return empty
+                resp = requests.get(f"{BACKEND_URL}/videocalls/{call_id}/signals?after={last_ts}",
+                                   headers={"Authorization": f"Bearer {caller['token']}"})
+                if resp.status_code != 200:
+                    log(f"❌ Caller get signals with after failed: {resp.status_code} {resp.text}")
+                    all_passed = False
+                else:
+                    signals_data = resp.json()
+                    if len(signals_data["signals"]) != 0:
+                        log(f"❌ Signals with after={last_ts} should be empty, got {len(signals_data['signals'])}")
+                        all_passed = False
+                    else:
+                        log(f"✅ GET signals with after={last_ts} returns empty")
+        
+        # Bad signal type -> 400
+        resp = requests.post(f"{BACKEND_URL}/videocalls/{call_id}/signal",
+                            headers={"Authorization": f"Bearer {caller['token']}"},
+                            json={"type": "invalid", "data": {}})
+        if resp.status_code != 400:
+            log(f"❌ Bad signal type should return 400, got {resp.status_code}")
+            all_passed = False
+        else:
+            log(f"✅ Bad signal type returns 400")
+        
+        log("\n=== TEST 5: End call -> status 'ended', signals return status 'ended', posting signal -> 409 ===")
+        # Caller ends call
+        resp = requests.post(f"{BACKEND_URL}/videocalls/{call_id}/end",
+                            headers={"Authorization": f"Bearer {caller['token']}"})
+        if resp.status_code != 200:
+            log(f"❌ End call failed: {resp.status_code} {resp.text}")
+            all_passed = False
+        else:
+            log(f"✅ Call ended")
+        
+        # Callee gets signals -> status 'ended'
+        resp = requests.get(f"{BACKEND_URL}/videocalls/{call_id}/signals?after=0",
+                           headers={"Authorization": f"Bearer {callee['token']}"})
+        if resp.status_code != 200:
+            log(f"❌ Callee get signals failed: {resp.status_code} {resp.text}")
+            all_passed = False
+        else:
+            signals_data = resp.json()
+            if signals_data["status"] != "ended":
+                log(f"❌ Expected status 'ended', got '{signals_data['status']}'")
+                all_passed = False
+            else:
+                log(f"✅ Callee signals show status 'ended'")
+        
+        # Posting signal now -> 409
+        resp = requests.post(f"{BACKEND_URL}/videocalls/{call_id}/signal",
+                            headers={"Authorization": f"Bearer {caller['token']}"},
+                            json={"type": "offer", "data": {}})
+        if resp.status_code != 409:
+            log(f"❌ Posting signal to ended call should return 409, got {resp.status_code}")
+            all_passed = False
+        else:
+            log(f"✅ Posting signal to ended call returns 409")
+        
+        # Accept again -> 409
+        resp = requests.post(f"{BACKEND_URL}/videocalls/{call_id}/accept",
+                            headers={"Authorization": f"Bearer {callee['token']}"})
+        if resp.status_code != 409:
+            log(f"❌ Accepting ended call should return 409, got {resp.status_code}")
+            all_passed = False
+        else:
+            log(f"✅ Accepting ended call returns 409")
+        
+        log("\n=== TEST 6: Decline - callee decline -> status 'declined', caller NOT charged ===")
+        # Start new call
+        resp = requests.post(f"{BACKEND_URL}/videocalls/start",
+                            headers={"Authorization": f"Bearer {caller['token']}"},
+                            json={"target_id": callee["user_id"], "minutes": 2})
+        if resp.status_code != 200:
+            log(f"❌ Start call failed: {resp.status_code} {resp.text}")
+            all_passed = False
+        else:
+            call_id_2 = resp.json()["id"]
+            log(f"✅ Started new call: {call_id_2}")
+            
+            # Get caller coins before decline
+            caller_db = db.users.find_one({"id": caller["user_id"]})
+            caller_coins_before = caller_db.get("coins", 0) + caller_db.get("withdrawable", 0)
+            
+            # Callee declines
+            resp = requests.post(f"{BACKEND_URL}/videocalls/{call_id_2}/decline",
+                                headers={"Authorization": f"Bearer {callee['token']}"})
+            if resp.status_code != 200:
+                log(f"❌ Decline call failed: {resp.status_code} {resp.text}")
+                all_passed = False
+            else:
+                # Check status is 'declined'
+                call_doc = db.calls.find_one({"id": call_id_2})
+                if call_doc["status"] != "declined":
+                    log(f"❌ Expected status 'declined', got '{call_doc['status']}'")
+                    all_passed = False
+                else:
+                    # Check caller NOT charged
+                    caller_db = db.users.find_one({"id": caller["user_id"]})
+                    caller_coins_after = caller_db.get("coins", 0) + caller_db.get("withdrawable", 0)
+                    if caller_coins_before != caller_coins_after:
+                        log(f"❌ Caller should not be charged on decline, coins changed from {caller_coins_before} to {caller_coins_after}")
+                        all_passed = False
+                    else:
+                        log(f"✅ Callee declined: status='declined', caller NOT charged")
+        
+        log("\n=== TEST 6b: Cancel - caller calls decline on ringing call -> 'cancelled' ===")
+        # Start new call
+        resp = requests.post(f"{BACKEND_URL}/videocalls/start",
+                            headers={"Authorization": f"Bearer {caller['token']}"},
+                            json={"target_id": callee["user_id"], "minutes": 2})
+        if resp.status_code != 200:
+            log(f"❌ Start call failed: {resp.status_code} {resp.text}")
+            all_passed = False
+        else:
+            call_id_3 = resp.json()["id"]
+            log(f"✅ Started new call: {call_id_3}")
+            
+            # Caller cancels (calls decline)
+            resp = requests.post(f"{BACKEND_URL}/videocalls/{call_id_3}/decline",
+                                headers={"Authorization": f"Bearer {caller['token']}"})
+            if resp.status_code != 200:
+                log(f"❌ Cancel call failed: {resp.status_code} {resp.text}")
+                all_passed = False
+            else:
+                # Check status is 'cancelled'
+                call_doc = db.calls.find_one({"id": call_id_3})
+                if call_doc["status"] != "cancelled":
+                    log(f"❌ Expected status 'cancelled', got '{call_doc['status']}'")
+                    all_passed = False
+                else:
+                    log(f"✅ Caller cancelled: status='cancelled'")
+        
+        log("\n=== TEST 7: Missed - created_at 40s ago -> 'missed', accept -> 409 ===")
+        # Start new call
+        resp = requests.post(f"{BACKEND_URL}/videocalls/start",
+                            headers={"Authorization": f"Bearer {caller['token']}"},
+                            json={"target_id": callee["user_id"], "minutes": 2})
+        if resp.status_code != 200:
+            log(f"❌ Start call failed: {resp.status_code} {resp.text}")
+            all_passed = False
+        else:
+            call_id_4 = resp.json()["id"]
+            log(f"✅ Started new call: {call_id_4}")
+            
+            # Set created_at to 40s ago
+            old_time = (datetime.now(timezone.utc) - timedelta(seconds=40)).isoformat()
+            db.calls.update_one({"id": call_id_4}, {"$set": {"created_at": old_time}})
+            log(f"✅ Set created_at to 40s ago")
+            
+            # GET call -> should be 'missed'
+            resp = requests.get(f"{BACKEND_URL}/videocalls/{call_id_4}",
+                               headers={"Authorization": f"Bearer {callee['token']}"})
+            if resp.status_code != 200:
+                log(f"❌ Get call failed: {resp.status_code} {resp.text}")
+                all_passed = False
+            else:
+                call_data = resp.json()
+                if call_data["status"] != "missed":
+                    log(f"❌ Expected status 'missed', got '{call_data['status']}'")
+                    all_passed = False
+                else:
+                    log(f"✅ Call status is 'missed'")
                     
-                    if lang1 and lang2 and lang1.get("status") != lang2.get("status"):
-                        status_changed = True
-                        print(f"   📈 Status changed for {lang_code}: {lang1.get('status')} -> {lang2.get('status')}")
-                
-                if status_changed:
-                    log_test("Progress tracking", True, "Language status changed between calls")
+                    # Try to accept -> 409
+                    resp = requests.post(f"{BACKEND_URL}/videocalls/{call_id_4}/accept",
+                                        headers={"Authorization": f"Bearer {callee['token']}"})
+                    if resp.status_code != 409:
+                        log(f"❌ Accepting missed call should return 409, got {resp.status_code}")
+                        all_passed = False
+                    else:
+                        log(f"✅ Accepting missed call returns 409")
+        
+        log("\n=== TEST 8: Errors - offline, disabled, insufficient coins, call self ===")
+        # Create offline user
+        offline_email = f"test_offline_{timestamp}@example.com"
+        test_emails.append(offline_email)
+        offline_user = register_user(offline_email, "Password123!", "Offline User", "female", 25, "male", "Boston", "USA")
+        if offline_user:
+            setup_user_for_videocall(offline_user["user_id"], coins=100, online=False, video_enabled=True)
+            
+            # Try to call offline user -> 403 USER_OFFLINE
+            resp = requests.post(f"{BACKEND_URL}/videocalls/start",
+                                headers={"Authorization": f"Bearer {caller['token']}"},
+                                json={"target_id": offline_user["user_id"], "minutes": 2})
+            if resp.status_code != 403 or "USER_OFFLINE" not in resp.text:
+                log(f"❌ Calling offline user should return 403 USER_OFFLINE, got {resp.status_code} {resp.text}")
+                all_passed = False
+            else:
+                log(f"✅ Calling offline user returns 403 USER_OFFLINE")
+        
+        # Create user with video_calls_enabled=False
+        disabled_email = f"test_disabled_{timestamp}@example.com"
+        test_emails.append(disabled_email)
+        disabled_user = register_user(disabled_email, "Password123!", "Disabled User", "male", 27, "female", "Seattle", "USA")
+        if disabled_user:
+            setup_user_for_videocall(disabled_user["user_id"], coins=100, online=True, video_enabled=False)
+            
+            # Try to call user with video disabled -> 403 VIDEO_CALLS_DISABLED
+            resp = requests.post(f"{BACKEND_URL}/videocalls/start",
+                                headers={"Authorization": f"Bearer {caller['token']}"},
+                                json={"target_id": disabled_user["user_id"], "minutes": 2})
+            if resp.status_code != 403 or "VIDEO_CALLS_DISABLED" not in resp.text:
+                log(f"❌ Calling user with video disabled should return 403 VIDEO_CALLS_DISABLED, got {resp.status_code} {resp.text}")
+                all_passed = False
+            else:
+                log(f"✅ Calling user with video disabled returns 403 VIDEO_CALLS_DISABLED")
+        
+        # Caller with 0 coins -> 400
+        db.users.update_one({"id": caller["user_id"]}, {"$set": {"coins": 0, "withdrawable": 0}})
+        resp = requests.post(f"{BACKEND_URL}/videocalls/start",
+                            headers={"Authorization": f"Bearer {caller['token']}"},
+                            json={"target_id": callee["user_id"], "minutes": 2})
+        if resp.status_code != 400:
+            log(f"❌ Calling with 0 coins should return 400, got {resp.status_code}")
+            all_passed = False
+        else:
+            log(f"✅ Calling with 0 coins returns 400")
+        
+        # Restore caller coins for next test
+        db.users.update_one({"id": caller["user_id"]}, {"$set": {"coins": 500, "withdrawable": 0}})
+        
+        # Call self -> 400
+        resp = requests.post(f"{BACKEND_URL}/videocalls/start",
+                            headers={"Authorization": f"Bearer {caller['token']}"},
+                            json={"target_id": caller["user_id"], "minutes": 2})
+        if resp.status_code != 400 or "CANNOT_CALL_SELF" not in resp.text:
+            log(f"❌ Calling self should return 400 CANNOT_CALL_SELF, got {resp.status_code} {resp.text}")
+            all_passed = False
+        else:
+            log(f"✅ Calling self returns 400 CANNOT_CALL_SELF")
+        
+        log("\n=== TEST 9: Insufficient at accept - caller coins 0 at accept -> 400 CALLER_INSUFFICIENT_COINS, status 'failed' ===")
+        # Start new call
+        resp = requests.post(f"{BACKEND_URL}/videocalls/start",
+                            headers={"Authorization": f"Bearer {caller['token']}"},
+                            json={"target_id": callee["user_id"], "minutes": 2})
+        if resp.status_code != 200:
+            log(f"❌ Start call failed: {resp.status_code} {resp.text}")
+            all_passed = False
+        else:
+            call_id_5 = resp.json()["id"]
+            log(f"✅ Started new call: {call_id_5}")
+            
+            # Set caller coins to 0
+            db.users.update_one({"id": caller["user_id"]}, {"$set": {"coins": 0, "withdrawable": 0}})
+            log(f"✅ Set caller coins to 0")
+            
+            # Callee tries to accept -> 400 CALLER_INSUFFICIENT_COINS
+            resp = requests.post(f"{BACKEND_URL}/videocalls/{call_id_5}/accept",
+                                headers={"Authorization": f"Bearer {callee['token']}"})
+            if resp.status_code != 400 or "CALLER_INSUFFICIENT_COINS" not in resp.text:
+                log(f"❌ Accept with insufficient caller coins should return 400 CALLER_INSUFFICIENT_COINS, got {resp.status_code} {resp.text}")
+                all_passed = False
+            else:
+                # Check call status is 'failed'
+                call_doc = db.calls.find_one({"id": call_id_5})
+                if call_doc["status"] != "failed":
+                    log(f"❌ Expected status 'failed', got '{call_doc['status']}'")
+                    all_passed = False
+                elif call_doc.get("reason") != "CALLER_INSUFFICIENT_COINS":
+                    log(f"❌ Expected reason 'CALLER_INSUFFICIENT_COINS', got '{call_doc.get('reason')}'")
+                    all_passed = False
                 else:
-                    log_test("Progress tracking", True, "Job still running (progress may be slow or completed)")
+                    log(f"✅ Accept with insufficient caller coins returns 400 CALLER_INSUFFICIENT_COINS, call status='failed'")
+        
+        log("\n=== CLEANUP ===")
+        cleanup_test_users(test_emails)
+        
+        return all_passed
         
     except Exception as e:
-        log_test("Admin status endpoint", False, f"Exception: {str(e)}")
+        log(f"❌ Test failed with exception: {e}")
+        import traceback
+        traceback.print_exc()
+        # Cleanup on error
+        if test_emails:
+            cleanup_test_users(test_emails)
+        return False
 
-def test_unauthorized_access():
-    """Test 2: Test 401/403 for non-admin users"""
-    print("\n🔒 Test 2: Unauthorized access to admin endpoints")
-    
-    # Register a normal user
-    try:
-        timestamp = int(time.time())
-        test_email = f"test_i18n_normal_{timestamp}@example.com"
-        test_password = "SecurePass123!"
-        
-        register_data = {
-            "email": test_email,
-            "password": test_password,
-            "name": "Test User",
-            "gender": "male",
-            "age": 28,
-            "interested_in": "female",
-            "city": "New York",
-            "country": "USA"
-        }
-        
-        resp = requests.post(f"{API_URL}/auth/register", json=register_data, timeout=30)
-        
-        if resp.status_code != 200:
-            log_test("Register normal user", False, f"Failed to register: {resp.status_code}")
-            return
-        
-        user_token = resp.json().get("token")
-        log_test("Register normal user", True, f"Created user: {test_email}")
-        
-        # Test without token
-        endpoints = [
-            "/admin/i18n/status",
-            "/admin/i18n/pretranslate",
-            "/admin/i18n/cancel",
-            "/admin/i18n/preview-notification"
-        ]
-        
-        for endpoint in endpoints:
-            # Test without token
-            if endpoint == "/admin/i18n/preview-notification":
-                resp = requests.post(f"{API_URL}{endpoint}", json={"lang": "es"}, timeout=30)
-            elif endpoint in ["/admin/i18n/pretranslate", "/admin/i18n/cancel"]:
-                resp = requests.post(f"{API_URL}{endpoint}", timeout=30)
-            else:
-                resp = requests.get(f"{API_URL}{endpoint}", timeout=30)
-            
-            if resp.status_code in [401, 403]:
-                log_test(f"No token access to {endpoint}", True, f"Correctly returned {resp.status_code}")
-            else:
-                log_test(f"No token access to {endpoint}", False, f"Expected 401/403, got {resp.status_code}")
-            
-            # Test with normal user token
-            headers = {"Authorization": f"Bearer {user_token}"}
-            if endpoint == "/admin/i18n/preview-notification":
-                resp = requests.post(f"{API_URL}{endpoint}", json={"lang": "es"}, headers=headers, timeout=30)
-            elif endpoint in ["/admin/i18n/pretranslate", "/admin/i18n/cancel"]:
-                resp = requests.post(f"{API_URL}{endpoint}", headers=headers, timeout=30)
-            else:
-                resp = requests.get(f"{API_URL}{endpoint}", headers=headers, timeout=30)
-            
-            if resp.status_code in [401, 403]:
-                log_test(f"Normal user access to {endpoint}", True, f"Correctly returned {resp.status_code}")
-            else:
-                log_test(f"Normal user access to {endpoint}", False, f"Expected 401/403, got {resp.status_code}")
-        
-    except Exception as e:
-        log_test("Unauthorized access test", False, f"Exception: {str(e)}")
-
-def test_pretranslate_while_running():
-    """Test 3: POST /api/admin/i18n/pretranslate while running -> 409"""
-    print("\n🚫 Test 3: Pretranslate while job is running")
-    
-    try:
-        headers = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
-        # PretranslateReq expects optional langs field
-        resp = requests.post(f"{API_URL}/admin/i18n/pretranslate", json={}, headers=headers, timeout=30)
-        
-        if resp.status_code == 409:
-            log_test("Pretranslate while running", True, f"Correctly returned 409: {resp.text}")
-        else:
-            log_test("Pretranslate while running", False, f"Expected 409, got {resp.status_code}: {resp.text}")
-        
-    except Exception as e:
-        log_test("Pretranslate while running", False, f"Exception: {str(e)}")
-
-def test_bundle_endpoints():
-    """Test 4: GET /api/i18n/bundle/{lang} for various languages"""
-    print("\n🌍 Test 4: Bundle endpoints for various languages")
-    
-    try:
-        # Test Spanish bundle
-        resp = requests.get(f"{API_URL}/i18n/bundle/es", timeout=30)
-        
-        if resp.status_code != 200:
-            log_test("Bundle endpoint /es", False, f"Expected 200, got {resp.status_code}")
-            return
-        
-        data = resp.json()
-        count = data.get("count", 0)
-        translations = data.get("translations", {})
-        
-        if count <= 500:
-            log_test("Spanish bundle count", False, f"Expected count > 500, got {count}")
-        else:
-            log_test("Spanish bundle count", True, f"count = {count} (> 500)")
-        
-        # Check translations is a dict
-        if not isinstance(translations, dict):
-            log_test("Spanish bundle translations type", False, f"Expected dict, got {type(translations)}")
-        else:
-            log_test("Spanish bundle translations type", True, "translations is a dict")
-        
-        # Check for some common keys
-        common_keys = ["Wallet", "Browse", "Profile", "Settings", "Messages", "Matches"]
-        found_keys = [k for k in common_keys if k in translations]
-        
-        if found_keys:
-            log_test("Spanish bundle common keys", True, f"Found keys: {', '.join(found_keys[:3])}")
-            # Show a sample translation
-            sample_key = found_keys[0]
-            print(f"   Sample: '{sample_key}' -> '{translations[sample_key]}'")
-        else:
-            log_test("Spanish bundle common keys", True, f"No common keys found, but has {len(translations)} translations")
-        
-        # Test English bundle (should return count 0)
-        resp = requests.get(f"{API_URL}/i18n/bundle/en", timeout=30)
-        
-        if resp.status_code != 200:
-            log_test("Bundle endpoint /en", False, f"Expected 200, got {resp.status_code}")
-        else:
-            data = resp.json()
-            if data.get("count") == 0:
-                log_test("English bundle count", True, "count = 0 (as expected)")
-            else:
-                log_test("English bundle count", False, f"Expected count = 0, got {data.get('count')}")
-        
-        # Test invalid language code
-        resp = requests.get(f"{API_URL}/i18n/bundle/bad!!", timeout=30)
-        
-        if resp.status_code in [400, 404]:
-            log_test("Bundle endpoint /bad!!", True, f"Correctly returned {resp.status_code}")
-        else:
-            log_test("Bundle endpoint /bad!!", False, f"Expected 400 or 404, got {resp.status_code}")
-        
-        # Test Quechua (qu) - should work
-        resp = requests.get(f"{API_URL}/i18n/bundle/qu", timeout=30)
-        
-        if resp.status_code == 200:
-            log_test("Bundle endpoint /qu", True, "Quechua bundle works (200)")
-        else:
-            log_test("Bundle endpoint /qu", False, f"Expected 200, got {resp.status_code}")
-        
-    except Exception as e:
-        log_test("Bundle endpoints", False, f"Exception: {str(e)}")
-
-def test_preview_notification():
-    """Test 5: POST /api/admin/i18n/preview-notification for different languages"""
-    print("\n📧 Test 5: Preview notification endpoint")
-    print("   ⚠️  Note: LLM key allows only ONE concurrent request, may take up to 60s each")
-    
-    try:
-        headers = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
-        
-        # Test Arabic (RTL language)
-        print("\n   Testing Arabic (ar) - RTL language...")
-        resp = requests.post(
-            f"{API_URL}/admin/i18n/preview-notification",
-            json={"lang": "ar"},
-            headers=headers,
-            timeout=90  # Long timeout as noted
-        )
-        
-        if resp.status_code != 200:
-            log_test("Preview notification /ar", False, f"Expected 200, got {resp.status_code}: {resp.text}")
-        else:
-            data = resp.json()
-            
-            # Check subject in Arabic
-            subject = data.get("subject", "")
-            if subject and not subject.isascii():
-                log_test("Arabic subject", True, f"Subject in Arabic: {subject[:50]}...")
-            else:
-                log_test("Arabic subject", False, f"Expected non-ASCII Arabic text, got: {subject}")
-            
-            # Check SMS in Arabic
-            sms = data.get("sms", "")
-            if sms and not sms.isascii():
-                log_test("Arabic SMS", True, f"SMS in Arabic: {sms[:50]}...")
-            else:
-                log_test("Arabic SMS", False, f"Expected non-ASCII Arabic text, got: {sms}")
-            
-            # Check rtl is true
-            if data.get("rtl") == True:
-                log_test("Arabic RTL flag", True, "rtl = true")
-            else:
-                log_test("Arabic RTL flag", False, f"Expected rtl=true, got {data.get('rtl')}")
-            
-            # Check HTML contains dir="rtl"
-            html = data.get("html", "")
-            if 'dir="rtl"' in html or "dir='rtl'" in html:
-                log_test("Arabic HTML dir attribute", True, 'HTML contains dir="rtl"')
-            else:
-                log_test("Arabic HTML dir attribute", False, 'HTML missing dir="rtl"')
-            
-            # Check name "Anna" is preserved
-            if "Anna" in subject or "Anna" in sms or "Anna" in html:
-                log_test("Name preservation (Anna)", True, "Name 'Anna' preserved in output")
-            else:
-                log_test("Name preservation (Anna)", False, "Name 'Anna' not found in output")
-            
-            # Check email_configured and sms_configured are false
-            if data.get("email_configured") == False:
-                log_test("email_configured flag", True, "email_configured = false")
-            else:
-                log_test("email_configured flag", False, f"Expected false, got {data.get('email_configured')}")
-            
-            if data.get("sms_configured") == False:
-                log_test("sms_configured flag", True, "sms_configured = false")
-            else:
-                log_test("sms_configured flag", False, f"Expected false, got {data.get('sms_configured')}")
-        
-        # Test German (LTR language)
-        print("\n   Testing German (de) - LTR language...")
-        resp = requests.post(
-            f"{API_URL}/admin/i18n/preview-notification",
-            json={"lang": "de"},
-            headers=headers,
-            timeout=90
-        )
-        
-        if resp.status_code != 200:
-            log_test("Preview notification /de", False, f"Expected 200, got {resp.status_code}: {resp.text}")
-        else:
-            data = resp.json()
-            
-            # Check subject in German
-            subject = data.get("subject", "")
-            if subject:
-                log_test("German subject", True, f"Subject: {subject[:50]}...")
-            else:
-                log_test("German subject", False, "No subject returned")
-            
-            # Check rtl is false
-            if data.get("rtl") == False:
-                log_test("German RTL flag", True, "rtl = false")
-            else:
-                log_test("German RTL flag", False, f"Expected rtl=false, got {data.get('rtl')}")
-        
-    except Exception as e:
-        log_test("Preview notification", False, f"Exception: {str(e)}")
-
-def test_regression():
-    """Test 6: Regression tests - translate, login, likes"""
-    print("\n🔄 Test 6: Regression tests")
-    
-    try:
-        # Test POST /api/i18n/translate
-        print("\n   Testing POST /api/i18n/translate...")
-        resp = requests.post(
-            f"{API_URL}/i18n/translate",
-            json={"lang": "fr", "texts": ["Withdraw"]},
-            timeout=30
-        )
-        
-        if resp.status_code != 200:
-            log_test("Translate endpoint regression", False, f"Expected 200, got {resp.status_code}")
-        else:
-            data = resp.json()
-            translations = data.get("translations", [])
-            if translations and translations[0] != "Withdraw":
-                log_test("Translate endpoint regression", True, f"French translation: {translations[0]}")
-            else:
-                log_test("Translate endpoint regression", False, f"Expected French translation, got: {translations}")
-        
-        # Test login
-        print("\n   Testing login...")
-        timestamp = int(time.time())
-        test_email = f"test_regression_{timestamp}@example.com"
-        test_password = "SecurePass123!"
-        
-        # Register first
-        register_data = {
-            "email": test_email,
-            "password": test_password,
-            "name": "Regression Test",
-            "gender": "female",
-            "age": 25,
-            "interested_in": "male",
-            "city": "Paris",
-            "country": "France"
-        }
-        
-        resp = requests.post(f"{API_URL}/auth/register", json=register_data, timeout=30)
-        
-        if resp.status_code != 200:
-            log_test("Login regression (register)", False, f"Failed to register: {resp.status_code}")
-            return
-        
-        # Now login
-        resp = requests.post(
-            f"{API_URL}/auth/login",
-            json={"email": test_email, "password": test_password},
-            timeout=30
-        )
-        
-        if resp.status_code != 200:
-            log_test("Login regression", False, f"Expected 200, got {resp.status_code}")
-            return
-        
-        user1_token = resp.json().get("token")
-        user1_id = resp.json().get("user", {}).get("id")
-        log_test("Login regression", True, "Login works correctly")
-        
-        # Test likes endpoint - need two users
-        print("\n   Testing likes endpoint...")
-        
-        # Register second user
-        test_email2 = f"test_regression_{timestamp}_2@example.com"
-        register_data2 = {
-            "email": test_email2,
-            "password": test_password,
-            "name": "Regression Test 2",
-            "gender": "male",
-            "age": 27,
-            "interested_in": "female",
-            "city": "Paris",
-            "country": "France"
-        }
-        
-        resp = requests.post(f"{API_URL}/auth/register", json=register_data2, timeout=30)
-        
-        if resp.status_code != 200:
-            log_test("Likes regression (register user 2)", False, f"Failed to register: {resp.status_code}")
-            return
-        
-        user2_token = resp.json().get("token")
-        user2_id = resp.json().get("user", {}).get("id")
-        
-        # User 1 likes User 2
-        headers = {"Authorization": f"Bearer {user1_token}"}
-        start_time = time.time()
-        resp = requests.post(
-            f"{API_URL}/likes",
-            json={"target_id": user2_id},
-            headers=headers,
-            timeout=30
-        )
-        elapsed = time.time() - start_time
-        
-        if resp.status_code != 200:
-            log_test("Likes endpoint regression", False, f"Expected 200, got {resp.status_code}: {resp.text}")
-            return
-        
-        data = resp.json()
-        
-        if elapsed < 5:  # Should return quickly
-            log_test("Likes endpoint speed", True, f"Returned in {elapsed:.2f}s (< 5s)")
-        else:
-            log_test("Likes endpoint speed", False, f"Took {elapsed:.2f}s (> 5s)")
-        
-        if data.get("liked") == True:
-            log_test("Likes endpoint response", True, "Like created successfully")
-        else:
-            log_test("Likes endpoint response", False, f"Expected liked=true, got: {data}")
-        
-        # Check if notification was created (in-app)
-        # Get user 2's notifications
-        headers2 = {"Authorization": f"Bearer {user2_token}"}
-        resp = requests.get(f"{API_URL}/notifications", headers=headers2, timeout=30)
-        
-        if resp.status_code == 200:
-            notifications = resp.json()
-            if isinstance(notifications, list) and len(notifications) > 0:
-                # Check if there's a like notification
-                like_notif = next((n for n in notifications if n.get("type") == "like"), None)
-                if like_notif:
-                    log_test("In-app notification created", True, "Like notification created in database")
-                else:
-                    log_test("In-app notification created", True, f"Notification created (type: {notifications[0].get('type')})")
-            else:
-                # Notifications are delivered in background, may not be immediately available
-                log_test("In-app notification check", True, "Notifications endpoint works (background delivery expected)")
-        else:
-            log_test("In-app notification check", False, f"Failed to get notifications: {resp.status_code}")
-        
-    except Exception as e:
-        log_test("Regression tests", False, f"Exception: {str(e)}")
-
-# Run all tests
-print("\n" + "=" * 80)
-print("🚀 Starting i18n Backend Tests")
-print("=" * 80)
-
-test_admin_status_with_progress()
-test_unauthorized_access()
-test_pretranslate_while_running()
-test_bundle_endpoints()
-test_preview_notification()
-test_regression()
-
-# Summary
-print("\n" + "=" * 80)
-print("📊 TEST SUMMARY")
-print("=" * 80)
-print(f"✅ Passed: {tests_passed}")
-print(f"❌ Failed: {tests_failed}")
-print(f"📈 Total: {tests_passed + tests_failed}")
-print(f"🎯 Success Rate: {tests_passed / (tests_passed + tests_failed) * 100:.1f}%")
-print("=" * 80)
-
-# Exit with appropriate code
-sys.exit(0 if tests_failed == 0 else 1)
+if __name__ == "__main__":
+    log("=== Starting Video Call Backend Tests ===")
+    success = run_tests()
+    if success:
+        log("\n✅ ALL TESTS PASSED")
+    else:
+        log("\n❌ SOME TESTS FAILED")
+    exit(0 if success else 1)

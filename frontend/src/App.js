@@ -1,5 +1,6 @@
 import React from "react";
 import DetectedLanguageBanner from "@/components/DetectedLanguageBanner";
+import IncomingCallWatcher from "@/components/IncomingCallWatcher";
 import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
@@ -80,6 +81,7 @@ const Shell = () => (
     </Routes>
     <SupportChat />
     <DetectedLanguageBanner />
+    <IncomingCallWatcher />
   </>
 );
 

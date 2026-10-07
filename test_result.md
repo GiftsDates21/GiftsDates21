@@ -105,6 +105,17 @@
 user_problem_statement: "Verify five advanced filters on Browse page are MULTI-SELECT dropdowns: Kids, Smoking, Drinking, Religion, Zodiac (in Full Premium filters section)."
 
 backend:
+  - task: "Video calls: ringing, accept-then-charge, decline/missed, WebRTC signaling relay"
+    implemented: true
+    working: "NA"
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "POST /api/videocalls/start {target_id, minutes} now only RINGS (no charge): checks target exists/not self/video_calls_enabled!=False (403 VIDEO_CALLS_DISABLED)/online last_seen<5min (403 USER_OFFLINE)/caller coins+withdrawable>=minutes*rate (400). Returns call {id,status:'ringing',cost,rate,minutes,caller,callee}. GET /api/videocalls/incoming (callee's ringing calls <30s). GET /api/videocalls/{id} (only participants, else 404; ringing >30s auto -> 'missed'). POST /{id}/accept (callee only, 403 otherwise; charges caller via spend_coins and credits callee withdrawable; status active; 409 if not ringing; CALLER_INSUFFICIENT_COINS 400 -> status failed). POST /{id}/decline (callee->declined, caller->cancelled, no charge). POST /{id}/end. POST /{id}/signal {type offer|answer|ice, data:{}} only when active (409 else), GET /{id}/signals?after=ts returns signals addressed to me + call status. Camera permission is enforced in the browser (getUserMedia) before start/accept."
   - task: "Pre-translate job + bundle + localized email/SMS"
     implemented: true
     working: true
@@ -219,6 +230,17 @@ backend:
       - working: true
         agent: "testing"
         comment: "VERIFIED: VIP breast_size field correctly handles LIST values (multi-select). Test sequence: (1) PUT /api/vip/profile with breast_size=['A', 'C', 'Natural'] returned 200 and saved correctly, (2) GET /api/auth/me confirmed vip.breast_size=['A', 'C', 'Natural'] with order preserved, (3) PUT with breast_size=[] returned 200 and saved as empty list without error. Field is correctly defined in VipProfileReq model (server.py line 2731) as List[str] and properly handled by PUT /api/vip/profile endpoint (line 2780). All tests passed (3/3)."
+  - task: "Video calls: ringing, accept-then-charge, signals, end/decline/cancel/missed, error handling"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "VERIFIED: All 9 video call test scenarios passed (100% success rate). Test results: (1) Start call with minutes=2 returns status='ringing', cost=20, caller coins NOT reduced yet (500 coins remain). (2) Callee GET /api/videocalls/incoming lists the call, caller's incoming is empty, third user GET /api/videocalls/{id} returns 404. (3) Caller tries accept returns 403, callee accept returns 200 with status='active', caller coins reduced by 20 (from coins or withdrawable), callee withdrawable increased by 20, transaction document created with type='videocall'. (4) Signals: caller POST signal with type='offer' works, callee GET signals?after=0 receives it with ts, caller GET signals returns empty, callee posts 'answer' and 'ice', caller receives both in ts order, GET with after=last_ts returns empty, bad signal type returns 400. (5) End: caller POST end sets status='ended', callee GET signals returns status='ended', posting signal returns 409, accept returns 409. (6) Decline: new call, callee decline sets status='declined', caller NOT charged. (7) Cancel: caller calls decline on ringing call sets status='cancelled'. (8) Missed: call with created_at 40s ago, GET returns status='missed', accept returns 409. (9) Errors: callee offline (last_seen 1h ago) returns 403 USER_OFFLINE, video_calls_enabled=False returns 403 VIDEO_CALLS_DISABLED, caller coins=0 returns 400, call self returns 400 CANNOT_CALL_SELF. (10) Insufficient at accept: start call, set caller coins to 0, callee accept returns 400 CALLER_INSUFFICIENT_COINS and call status='failed'. Test users: test_caller_1791347148@example.com, test_callee_1791347148@example.com, test_third_1791347148@example.com, test_offline_1791347148@example.com, test_disabled_1791347148@example.com (all cleaned up). All video call endpoints working correctly with proper charge timing, signal relay, status transitions, and error handling."
 
 frontend:
   - task: "Browse page - Kids multi-select filter"
@@ -295,8 +317,8 @@ frontend:
 
 metadata:
   created_by: "testing_agent"
-  version: "1.5"
-  test_sequence: 6
+  version: "1.6"
+  test_sequence: 7
   run_ui: true
 
 test_plan:
@@ -320,3 +342,5 @@ agent_communication:
     message: "Completed comprehensive testing of POST /api/i18n/translate endpoint and auth regression. ALL 11 TESTS PASSED (7 translation + 4 auth): Translation tests verified: (1) Swahili translation works correctly with non-English output, (2) Placeholder {o} preserved in translated text, (3) Brand name 'GiftsDates' unchanged, (4) Caching works (0.13s fast response, identical results), (5) English 'en' returns input unchanged, (6) Invalid lang '123!!' returns 400 BAD_LANG, (7) Regional code 'pt-BR' works with Portuguese translations, (8) Empty texts [] returns empty array, (9) Duplicate strings handled correctly. Auth tests verified: (10) User registration works, (11) PATCH /api/auth/me with language='qu' persists correctly, (12) GET /api/auth/me confirms persistence, (13) POST /api/auth/login works (regression passed). Test user: test_i18n_1791340871_1772@example.com. Translation endpoint fully functional with proper serialization, caching, placeholder preservation, and brand name protection. No issues found."
   - agent: "testing"
     message: "Completed comprehensive testing of i18n admin & bundle endpoints. ALL 37 TESTS PASSED (100% success rate). Six test categories executed: (1) Admin status endpoint with progress tracking - verified job.running=true, 14 languages present (es,fr,de,pt,ru,zh,ar,hi,ja,ko,it,tr,uk,pl), each language has status/total/done/seeded fields, total_sources=1622 (>1000), coverage list of 14 items, progress confirmed between two calls 20s apart (French: 1103->1223 translations completed). (2) Authorization security - 8 tests passed: endpoints /admin/i18n/status, /pretranslate, /cancel, /preview-notification correctly return 401 without token and 403 for non-admin users. (3) Pretranslate conflict handling - correctly returns 409 ALREADY_RUNNING when job is running. (4) Bundle endpoints - Spanish bundle has 1613 translations (>500 required), translations dict contains expected keys ('Wallet'->'Cartera'), English bundle returns count=0, invalid code 'bad!!' returns 400, Quechua 'qu' works (200). (5) Preview notification - Arabic (RTL): subject/SMS in Arabic (non-ASCII), rtl=true, HTML contains dir='rtl', name 'Anna' preserved, email_configured=false, sms_configured=false; German (LTR): subject in German, rtl=false. Both requests completed successfully despite LLM serialization. (6) Regression tests - POST /api/i18n/translate works ('Withdraw'->'Retirer' in French), login works, likes endpoint fast (0.07s <5s), like created successfully, notifications endpoint accessible (background delivery working as designed). Test users: test_i18n_normal_1791342856@example.com, test_regression_1791342876@example.com. All i18n features working correctly: admin endpoints secured, bundle generation functional, localized notifications with proper RTL handling, existing functionality intact."
+  - agent: "testing"
+    message: "Completed comprehensive testing of video call backend functionality. ALL 9 TEST SCENARIOS PASSED (100% success rate). Test coverage: (1) Start call with minutes=2 returns status='ringing', cost=20 (rate 10 coins/min), caller coins NOT reduced yet (remains 500). (2) Callee GET /api/videocalls/incoming lists the call, caller's incoming is empty, third user GET /api/videocalls/{id} returns 404 CALL_NOT_FOUND. (3) Caller tries accept returns 403 ONLY_RECEIVER_CAN_ACCEPT, callee accept returns 200 with status='active', caller coins reduced by 20 (spend_coins deducts from coins first then withdrawable), callee withdrawable increased by 20, transaction document created with type='videocall'. (4) WebRTC signaling: caller POST /api/videocalls/{id}/signal with type='offer' works, callee GET /api/videocalls/{id}/signals?after=0 receives it with ts field, caller GET signals returns empty (correct), callee posts 'answer' and 'ice' signals, caller receives both in ts order, GET with after=last_ts returns empty, bad signal type returns 400 BAD_SIGNAL. (5) End call: caller POST /api/videocalls/{id}/end sets status='ended', callee GET signals returns status='ended', posting signal to ended call returns 409 CALL_NOT_ACTIVE, accept on ended call returns 409 CALL_ENDED. (6) Decline: new call, callee POST /api/videocalls/{id}/decline sets status='declined', caller NOT charged (coins unchanged). (7) Cancel: caller calls decline on ringing call sets status='cancelled'. (8) Missed call: call with created_at set to 40s ago (>RING_SECONDS=30), GET /api/videocalls/{id} returns status='missed' (auto-expired by _expire_ringing), accept returns 409 CALL_MISSED. (9) Error handling: callee offline (last_seen 1h ago) returns 403 USER_OFFLINE, video_calls_enabled=False returns 403 VIDEO_CALLS_DISABLED, caller coins=0 returns 400 'Insufficient coins', call self returns 400 CANNOT_CALL_SELF. (10) Insufficient at accept: start call with caller having 500 coins, then set caller coins to 0 in db, callee accept returns 400 CALLER_INSUFFICIENT_COINS and call status updated to 'failed' with reason='CALLER_INSUFFICIENT_COINS'. Test users: test_caller_1791347148@example.com, test_callee_1791347148@example.com, test_third_1791347148@example.com, test_offline_1791347148@example.com, test_disabled_1791347148@example.com (all cleaned up from users and new_users_list collections). All video call endpoints working correctly with proper charge timing (charge only on accept, not on start), WebRTC signal relay, status transitions, auto-expiry of ringing calls, and comprehensive error handling."
