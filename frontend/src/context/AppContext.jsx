@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { api } from "../lib/api";
-import { LANGUAGES, missingStrings } from "../lib/i18n";
+import { LANGUAGES, missingStrings, detectLanguage } from "../lib/i18n";
 import { setAutoLanguage, prefetch } from "../lib/autoTranslate";
 
 const AppCtx = createContext(null);
@@ -8,7 +8,9 @@ export const useApp = () => useContext(AppCtx);
 
 export function AppProvider({ children }) {
   const [user, setUser] = useState(null);
-  const [lang, setLang] = useState(() => localStorage.getItem("gd_lang") || "en");
+  // Explicit choice wins; otherwise open the site in the visitor's browser language (closest match, else English).
+  const [lang, setLang] = useState(() => localStorage.getItem("gd_lang") || detectLanguage());
+  const [langDetected, setLangDetected] = useState(() => !localStorage.getItem("gd_lang") && detectLanguage() !== "en" && !localStorage.getItem("gd_lang_banner_done"));
   const [meta, setMeta] = useState(null);
   const [loading, setLoading] = useState(true);
   const [spinEligible, setSpinEligible] = useState(false);
@@ -18,8 +20,10 @@ export function AppProvider({ children }) {
     try { const { data } = await api.get("/spin/status"); setSpinEligible(!!data.eligible); } catch { setSpinEligible(false); }
   }, []);
 
+  const dismissLangBanner = useCallback(() => { setLangDetected(false); localStorage.setItem("gd_lang_banner_done", "1"); }, []);
   const setLanguage = useCallback((code) => {
     setLang(code);
+    setLangDetected(false); localStorage.setItem("gd_lang_banner_done", "1");
     localStorage.setItem("gd_lang", code);
     const cfg = LANGUAGES.find(l => l.code === code);
     document.documentElement.setAttribute("dir", cfg?.dir || "ltr");
@@ -76,7 +80,7 @@ export function AppProvider({ children }) {
   const logout = () => { localStorage.removeItem("gd_token"); setUser(null); setSpinEligible(false); };
 
   return (
-    <AppCtx.Provider value={{ user, setUser, lang, setLanguage, meta, loading, login, register, logout, refreshUser, spinEligible, refreshSpin }}>
+    <AppCtx.Provider value={{ user, setUser, lang, setLanguage, langDetected, dismissLangBanner, meta, loading, login, register, logout, refreshUser, spinEligible, refreshSpin }}>
       {children}
     </AppCtx.Provider>
   );

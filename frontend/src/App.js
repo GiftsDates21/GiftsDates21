@@ -1,4 +1,5 @@
 import React from "react";
+import DetectedLanguageBanner from "@/components/DetectedLanguageBanner";
 import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
@@ -78,6 +79,7 @@ const Shell = () => (
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
     <SupportChat />
+    <DetectedLanguageBanner />
   </>
 );
 

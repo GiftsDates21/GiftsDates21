@@ -1,7 +1,7 @@
 // GiftsDates i18n — worldwide language support
 import WORLD_LANGUAGES from "./languages.json";
 import GENERATED from "./locales";
-import { autoLookup } from "./autoTranslate";
+import { autoLookup, markNative } from "./autoTranslate";
 
 // Full worldwide list drives the app's language switcher.
 export const LANGUAGES = WORLD_LANGUAGES;
@@ -1146,15 +1146,15 @@ const T = {
 export function t(key, lang) {
   const entry = T[key];
   // 1. Curated inline translation (highest quality — original 11 languages)
-  if (entry && entry[lang]) return entry[lang];
+  if (entry && entry[lang]) { if (lang !== "en") markNative(entry[lang], lang); return entry[lang]; }
   // 2. AI-generated worldwide locale file (loaded from ./locales)
   const gen = GENERATED && GENERATED[lang];
-  if (gen && gen[key] != null && gen[key] !== "") return gen[key];
+  if (gen && gen[key] != null && gen[key] !== "") { markNative(gen[key], lang); return gen[key]; }
   // 3. Live AI translation for any other world language (cached), then base language, then English
   const en = entry ? entry.en : null;
   if (en && lang && lang !== "en") {
     const auto = autoLookup(en, lang);
-    if (auto) return auto;
+    if (auto) { markNative(auto, lang); return auto; }
     const base = lang.split("-")[0];
     if (base !== lang && entry[base]) return entry[base];
     if (base !== lang && GENERATED && GENERATED[base] && GENERATED[base][key]) return GENERATED[base][key];
@@ -1174,4 +1174,21 @@ export function missingStrings(lang) {
     if (entry.en) out.push(entry.en);
   }
   return out;
+}
+
+// Map the visitor's browser languages to the closest supported language (pt-PT -> pt, zh-HK -> zh-TW...).
+const ALIASES = { iw: "he", in: "id", ji: "yi", jw: "jv", mo: "ro", tl: "fil", nb: "no", nn: "no", "zh-hk": "zh-TW", "zh-mo": "zh-TW", "zh-hant": "zh-TW", "zh-tw": "zh-TW", "zh-hans": "zh", "zh-cn": "zh", "zh-sg": "zh", ku: "kmr", "pt-br": "pt-BR", "es-419": "es-MX" };
+export function detectLanguage(list) {
+  const prefs = (list && list.length ? list : (typeof navigator !== "undefined" ? (navigator.languages?.length ? navigator.languages : [navigator.language]) : [])).filter(Boolean);
+  const byCode = new Map(LANGUAGES.map(l => [l.code.toLowerCase(), l.code]));
+  for (const raw of prefs) {
+    const tag = String(raw).replace("_", "-").toLowerCase();
+    const parts = tag.split("-");
+    const cands = [tag, ALIASES[tag], parts.length > 2 ? `${parts[0]}-${parts[1]}` : null, ALIASES[`${parts[0]}-${parts[1]}`],
+      // Latin-American Spanish variants
+      parts[0] === "es" && parts[1] && !["es"].includes(parts[1]) && /^[a-z]{2}$|^\d{3}$/.test(parts[1]) && parts[1] !== "es" ? "es-mx" : null,
+      ALIASES[parts[0]], parts[0]];
+    for (const c of cands) { if (c && byCode.has(c.toLowerCase())) return byCode.get(c.toLowerCase()); }
+  }
+  return "en";
 }

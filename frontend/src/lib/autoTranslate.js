@@ -22,6 +22,11 @@ let inflight = 0;
 let observer = null;
 let persistTimer = null;
 const listeners = new Set();
+const native = new Set();       // strings already rendered in the target language by t()
+let ready = Promise.resolve();  // resolves when the pre-translated bundle is loaded
+
+// Called by t() for curated/generated translations so they are not re-translated.
+export function markNative(s, code) { if (s && code && code !== "en") native.add(code + "\u0001" + String(s).trim()); }
 
 export const onTranslatingChange = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
 const emit = () => { const busy = inflight > 0 || queue.size > 0; listeners.forEach(fn => fn(busy)); };
@@ -44,7 +49,7 @@ function skipped(el) {
   if (SKIP_TAGS.has(el.tagName.toUpperCase())) return true;
   return !!el.closest('[translate="no"],[data-no-translate],.notranslate,[contenteditable="true"]');
 }
-const translatable = (s) => s && s.length <= 800 && HAS_LETTER.test(s);
+const translatable = (s) => s && s.length <= 800 && HAS_LETTER.test(s) && !native.has(lang + "\u0001" + s);
 
 // Public: synchronous lookup used by t() and native dialogs. Queues unknown strings.
 export function autoLookup(src, code = lang) {
@@ -69,6 +74,7 @@ async function flush() {
   if (running) return;
   running = true;
   try {
+    await ready;
     while (lang !== "en" && (queue.size || preQueue.size)) {
       const code = lang;
       const src = queue.size ? queue : preQueue;
@@ -201,6 +207,15 @@ export function setAutoLanguage(code) {
   queue = new Set();
   preQueue = new Set();
   cache = code === "en" ? new Map() : loadCache(code);
+  if (code !== "en") {
+    // Load everything pre-translated for this language in one request (instant first load).
+    ready = api.get(`/i18n/bundle/${encodeURIComponent(code)}`).then(({ data }) => {
+      if (code !== lang || !data?.translations) return;
+      for (const [k, v] of Object.entries(data.translations)) cache.set(k, v);
+      persist();
+      scan(document.body); translateTitle();
+    }).catch(() => {});
+  } else ready = Promise.resolve();
   patchDialogs();
   startObserver();
   if (code !== "en") { scan(document.body); translateTitle(); }

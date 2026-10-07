@@ -26,6 +26,11 @@ export default function LanguageSwitcher({ className = "" }) {
   const [open, setOpen] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   React.useEffect(() => onTranslatingChange(setBusy), []);
+  React.useEffect(() => {
+    const openIt = () => setOpen(true);
+    window.addEventListener("gd-open-language-picker", openIt);
+    return () => window.removeEventListener("gd-open-language-picker", openIt);
+  }, []);
   const current = LANGUAGES.find(l => l.code === lang) || LANGUAGES[0];
   const popular = POPULAR.map(c => LANGUAGES.find(l => l.code === c)).filter(Boolean);
   const all = [...LANGUAGES].sort((a, b) => (a.englishName || a.name).localeCompare(b.englishName || b.name));

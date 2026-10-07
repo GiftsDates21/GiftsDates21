@@ -344,9 +344,13 @@ async def send_email(*, to: str, subject: str, html: str) -> bool:
         logging.error(f"Email send failed: {e}")
         return False
 
-def _email_html(title: str, body: str) -> str:
+EMAIL_FOOTER_EN = "Sent by GiftsDates · Luxury Dating. We never ask for your password or card details by email."
+RTL_LANGS = {"ar", "ur", "fa", "he", "ps", "sd", "ckb", "yi", "ug", "dv", "ks", "bal", "syr"}
+
+def _email_html(title: str, body: str, footer: str | None = None, rtl: bool = False) -> str:
     from html import escape as _esc
-    return (f'<table role="presentation" width="100%" style="background:#0d0b12;padding:24px"><tr><td align="center">'
+    footer = footer or EMAIL_FOOTER_EN
+    return (f'<table role="presentation" width="100%" dir="{"rtl" if rtl else "ltr"}" style="background:#0d0b12;padding:24px"><tr><td align="center">'
             f'<table role="presentation" width="480" style="background:#161320;border-radius:16px;'
             f'border:1px solid rgba(212,175,55,0.25);font-family:Arial,sans-serif;color:#f4f1f7">'
             f'<tr><td style="padding:24px 28px">'
@@ -354,31 +358,69 @@ def _email_html(title: str, body: str) -> str:
             f'<div style="font-size:17px;font-weight:600;margin:14px 0 6px">{_esc(title)}</div>'
             f'<div style="font-size:14px;line-height:1.5;color:#c9c4d4">{_esc(body)}</div>'
             f'<div style="font-size:11px;color:#8a8598;margin-top:22px;border-top:1px solid rgba(255,255,255,0.08);padding-top:12px">'
-            f'Sent by GiftsDates · Luxury Dating. We never ask for your password or card details by email.</div>'
+            f'{_esc(footer)}</div>'
             f'</td></tr></table></td></tr></table>')
+
+_bg_tasks: set = set()
+
+def _spawn(coro):
+    t = asyncio.create_task(coro); _bg_tasks.add(t); t.add_done_callback(_bg_tasks.discard)
+    return t
+
+async def localize_message(lang: str, title: str, body: str, cta: str | None = None, sms_body: str | None = None) -> dict:
+    """Translate a notification (email + SMS parts) into the recipient's language. Falls back to English."""
+    code = (lang or "en").strip() or "en"
+    parts = [title or "", body or "", cta or "", EMAIL_FOOTER_EN, sms_body or ""]
+    if code.lower() != "en":
+        try:
+            if not re.fullmatch(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,4})?", code): raise ValueError("bad lang")
+            parts = await localize_texts(parts, code, ui=False)
+        except Exception as e:
+            logging.error(f"localize_message failed ({code}): {e}")
+    t_title, t_body, t_cta, t_footer, t_sms = parts
+    return {"lang": code, "rtl": code.split("-")[0].lower() in RTL_LANGS, "title": t_title, "body": t_body,
+            "cta": t_cta or None, "footer": t_footer, "sms_body": t_sms or None}
+
+async def _deliver(user_id: str, title: str, body: str, link: str | None, cta: str, email: bool, want_sms: bool, sms_body: str | None, now: str):
+    try:
+        u = await db.users.find_one({"id": user_id}, {"email": 1, "phone": 1, "sms_notifications_enabled": 1, "language": 1})
+        if not u: return
+        do_email = bool(email and u.get("email"))
+        do_sms = bool(want_sms and u.get("phone") and u.get("sms_notifications_enabled"))
+        if not (do_email or do_sms): return
+        email_live = bool(EMAIL_KEY)
+        sms_live = bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM)
+        # Only spend AI translation when a message will actually be delivered.
+        lang = u.get("language") or "en"
+        loc = await localize_message(lang, title, body, cta, sms_body) if ((do_email and email_live) or (do_sms and sms_live)) \
+            else {"lang": "en", "rtl": False, "title": title, "body": body, "cta": cta, "footer": None, "sms_body": sms_body}
+        if do_email:
+            html = (_email_cta_html(loc["title"], loc["body"], link, loc["cta"] or cta, loc["footer"], loc["rtl"]) if link
+                    else _email_html(loc["title"], loc["body"], loc["footer"], loc["rtl"]))
+            sent = await send_email(to=u["email"], subject=f"{loc['title']} · GiftsDates", html=html)
+            await db.email_outbox.insert_one({"id": str(uuid.uuid4()), "to": u["email"], "subject": loc["title"], "body": loc["body"],
+                                              "lang": loc["lang"], "status": "sent" if sent else "failed", "created_at": now})
+        if do_sms:
+            text = (loc["sms_body"] or f"{loc['title']} — {loc['body']}")
+            if link:
+                text = f"{text} {link}"
+            status = await send_sms(to=u["phone"], body=text[:600])
+            await db.sms_outbox.insert_one({"id": str(uuid.uuid4()), "to": u["phone"], "body": text, "lang": loc["lang"],
+                                            "status": status, "created_at": now})
+    except Exception:
+        logging.exception("notification delivery failed")
 
 async def notify(user_id: str, ntype: str, title: str, body: str, data: dict | None = None, email: bool = False, link: str | None = None, cta: str = "View on GiftsDates", sms: bool | None = None, sms_body: str | None = None):
     """Multi-channel notification: always records an in-app (push) notification, and
-    fans out to Email and SMS. SMS defaults to ON whenever an email is sent, but only
-    reaches users who have a phone number AND opted in (sms_notifications_enabled)."""
+    fans out to Email and SMS in the recipient's chosen language (in the background).
+    SMS defaults to ON whenever an email is sent, but only reaches users who have a
+    phone number AND opted in (sms_notifications_enabled)."""
     now = datetime.now(timezone.utc).isoformat()
     await db.notifications.insert_one({"id": str(uuid.uuid4()), "user_id": user_id, "type": ntype, "title": title,
                                        "body": body, "data": data or {}, "read": False, "created_at": now})
-    # SMS follows email by default so opted-in users get every event on both channels.
     want_sms = email if sms is None else sms
-    u = await db.users.find_one({"id": user_id}, {"email": 1, "phone": 1, "sms_notifications_enabled": 1}) if (email or want_sms) else None
-    if email and u and u.get("email"):
-        html = _email_cta_html(title, body, link, cta) if link else _email_html(title, body)
-        sent = await send_email(to=u["email"], subject=f"{title} · GiftsDates", html=html)
-        await db.email_outbox.insert_one({"id": str(uuid.uuid4()), "to": u["email"], "subject": title, "body": body,
-                                          "status": "sent" if sent else "failed", "created_at": now})
-    if want_sms and u and u.get("phone") and u.get("sms_notifications_enabled"):
-        text = (sms_body or f"{title} — {body}")
-        if link:
-            text = f"{text} {link}"
-        status = await send_sms(to=u["phone"], body=text[:600])
-        await db.sms_outbox.insert_one({"id": str(uuid.uuid4()), "to": u["phone"], "body": text,
-                                        "status": status, "created_at": now})
+    if email or want_sms:
+        _spawn(_deliver(user_id, title, body, link, cta, email, want_sms, sms_body, now))
 
 # Fixed inbox that receives admin alerts (new signups, ID-approval requests, etc.)
 ADMIN_NOTIFY_EMAIL = os.environ.get("ADMIN_NOTIFY_EMAIL", "giftsdates@gmail.com")
@@ -2029,38 +2071,203 @@ async def _ui_llm_chunk(chunk: List[tuple], lang_name: str) -> dict:
                 break
     return {}
 
-@api.post("/i18n/translate")
-async def ui_translate(req: UiTranslateReq):
-    """Translate UI strings into any world language. Shared cache, so each string is only translated once per language."""
-    code = (req.lang or "en").strip()[:12]
+def _h(t: str) -> str:
+    return _hashlib.sha1(t.encode("utf-8")).hexdigest()
+
+def _norm_lang(code: str) -> str:
+    code = (code or "en").strip()[:12]
     if not re.fullmatch(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,4})?", code): raise HTTPException(400, "BAD_LANG")
-    texts = [str(t)[:800] for t in (req.texts or [])][:150]
-    if code.lower() == "en" or not texts: return {"translations": texts}
-    lang_name = LANG_NAMES.get(code) or LANG_NAMES.get(code.split("-")[0]) or f"the language with BCP-47 code '{code}'"
-    hashes = [_hashlib.sha1(t.encode("utf-8")).hexdigest() for t in texts]
+    return code
+
+def _lang_name(code: str) -> str:
+    return LANG_NAMES.get(code) or LANG_NAMES.get(code.split("-")[0]) or f"the language with BCP-47 code '{code}'"
+
+def _chunks_by_budget(items: List[tuple], max_items: int = 60, max_chars: int = 6000):
+    out, cur, size = [], [], 0
+    for it in items:
+        if cur and (len(cur) >= max_items or size + len(it[1]) > max_chars):
+            out.append(cur); cur, size = [], 0
+        cur.append(it); size += len(it[1])
+    if cur: out.append(cur)
+    return out
+
+async def localize_texts(texts: List[str], code: str, ui: bool = True) -> List[str]:
+    """Translate English strings into `code` using the shared cache, calling the AI only for misses."""
+    if not texts or code.lower() == "en": return list(texts)
+    hashes = [_h(t) for t in texts]
     found = {}
     async for d in db.ui_translations.find({"lang": code, "h": {"$in": list(set(hashes))}}, {"_id": 0, "h": 1, "out": 1}):
         found[d["h"]] = d["out"]
     missing, seen = [], set()
     for i, (t, h) in enumerate(zip(texts, hashes)):
-        if h not in found and h not in seen:
+        if h not in found and h not in seen and t.strip():
             seen.add(h); missing.append((i, t))
     if missing:
-        chunks = [missing[i:i + 60] for i in range(0, len(missing), 60)]
-        results = [await _ui_llm_chunk(c, lang_name) for c in chunks]
+        lang_name = _lang_name(code)
         now = datetime.now(timezone.utc).isoformat()
-        for chunk, res in zip(chunks, results):
-            if not isinstance(res, dict): continue
+        for chunk in _chunks_by_budget(missing):
+            res = await _ui_llm_chunk(chunk, lang_name)
             for i, t in chunk:
                 out = res.get(i)
                 if not out: continue
                 found[hashes[i]] = out
                 try:
                     await db.ui_translations.update_one({"lang": code, "h": hashes[i]},
-                        {"$set": {"lang": code, "h": hashes[i], "src": t, "out": out, "at": now}}, upsert=True)
+                        {"$set": {"lang": code, "h": hashes[i], "src": t, "out": out, "ui": ui, "at": now}}, upsert=True)
                 except Exception:
                     pass
-    return {"translations": [found.get(h, t) for t, h in zip(texts, hashes)]}
+    return [found.get(h, t) for t, h in zip(texts, hashes)]
+
+async def _register_sources(texts: List[str]):
+    now = datetime.now(timezone.utc).isoformat()
+    for t in set(texts):
+        t = t.strip()
+        if 2 <= len(t) <= 400:
+            try:
+                await db.ui_sources.update_one({"h": _h(t)}, {"$setOnInsert": {"h": _h(t), "src": t, "at": now}, "$inc": {"seen": 1}}, upsert=True)
+            except Exception:
+                pass
+
+@api.post("/i18n/translate")
+async def ui_translate(req: UiTranslateReq):
+    """Translate UI strings into any world language. Shared cache, so each string is only translated once per language."""
+    code = _norm_lang(req.lang)
+    texts = [str(t)[:800] for t in (req.texts or [])][:150]
+    if code.lower() == "en" or not texts: return {"translations": texts}
+    out = await localize_texts(texts, code, ui=True)
+    asyncio.create_task(_register_sources(texts))
+    return {"translations": out}
+
+@api.get("/i18n/bundle/{code}")
+async def ui_bundle(code: str):
+    """All pre-translated UI strings for a language — lets the site open instantly in that language."""
+    code = _norm_lang(code)
+    if code.lower() == "en": return {"lang": code, "count": 0, "translations": {}}
+    tr = {}
+    async for d in db.ui_translations.find({"lang": code, "ui": {"$ne": False}}, {"_id": 0, "src": 1, "out": 1}):
+        if d.get("src") and d.get("out"): tr[d["src"]] = d["out"]
+    return {"lang": code, "count": len(tr), "translations": tr}
+
+# ---------- Admin: pre-translate the whole site for the main markets ----------
+PRETRANSLATE_LANGS = ["es", "fr", "de", "pt", "ru", "zh", "ar", "hi", "ja", "ko", "it", "tr", "uk", "pl"]
+_UI_STRINGS_CACHE: dict = {}
+
+def _ui_strings() -> dict:
+    if not _UI_STRINGS_CACHE:
+        import json as _json
+        try:
+            _UI_STRINGS_CACHE.update(_json.loads((ROOT_DIR / "ui_strings.json").read_text(encoding="utf-8")))
+        except Exception as e:
+            logging.error(f"ui_strings.json missing: {e}")
+            _UI_STRINGS_CACHE.update({"dictionary": {}, "static": []})
+    return _UI_STRINGS_CACHE
+
+async def _all_sources() -> List[str]:
+    us = _ui_strings()
+    src = {v["en"].strip() for v in us["dictionary"].values() if v.get("en", "").strip()}
+    src |= {s.strip() for s in us["static"] if s.strip()}
+    async for d in db.ui_sources.find({}, {"_id": 0, "src": 1}).sort("seen", -1).limit(5000):
+        src.add(d["src"])
+    return sorted(src)
+
+_pt_job: dict = {"running": False}
+_pt_task_ref: dict = {}
+
+async def _run_pretranslate(langs: List[str]):
+    job = _pt_job
+    try:
+        sources = await _all_sources()
+        dictionary = _ui_strings()["dictionary"]
+        now = datetime.now(timezone.utc).isoformat()
+        for code in langs:
+            if job.get("cancel"): break
+            st = job["langs"][code]
+            st["status"] = "seeding"; job["current"] = code
+            # 1) seed curated / generated translations already shipped with the app (no AI cost)
+            seeded = 0
+            for v in dictionary.values():
+                en, tr = (v.get("en") or "").strip(), (v.get(code) or "").strip()
+                if en and tr:
+                    try:
+                        r = await db.ui_translations.update_one({"lang": code, "h": _h(en)},
+                            {"$setOnInsert": {"lang": code, "h": _h(en), "src": en, "out": tr, "ui": True, "origin": "curated", "at": now}}, upsert=True)
+                        seeded += 1 if r.upserted_id else 0
+                    except Exception:
+                        pass
+            st["seeded"] = seeded
+            # 2) AI-translate everything still missing
+            have = set()
+            async for d in db.ui_translations.find({"lang": code}, {"_id": 0, "h": 1}): have.add(d["h"])
+            todo = [s for s in sources if _h(s) not in have]
+            st.update({"total": len(sources), "done": len(sources) - len(todo), "status": "translating"})
+            for chunk in _chunks_by_budget(list(enumerate(todo))):
+                if job.get("cancel"): break
+                texts = [t for _, t in chunk]
+                before = len(texts)
+                await localize_texts(texts, code, ui=True)
+                ok = await db.ui_translations.count_documents({"lang": code, "h": {"$in": [_h(t) for t in texts]}})
+                st["done"] += ok; st["failed"] = st.get("failed", 0) + (before - ok)
+            st["status"] = "cancelled" if job.get("cancel") else "done"
+        job["finished_at"] = datetime.now(timezone.utc).isoformat()
+    except Exception as e:
+        logging.exception("pretranslate failed")
+        job["error"] = str(e)[:300]
+    finally:
+        job["running"] = False; job["current"] = None
+        try:
+            await db.i18n_jobs.replace_one({"id": "pretranslate"}, {"id": "pretranslate", **{k: v for k, v in job.items() if k != "cancel"}}, upsert=True)
+        except Exception:
+            pass
+
+class PretranslateReq(BaseModel):
+    langs: Optional[List[str]] = None
+
+@api.post("/admin/i18n/pretranslate")
+async def admin_pretranslate(req: PretranslateReq, admin=Depends(get_admin)):
+    if _pt_job.get("running"): raise HTTPException(409, "ALREADY_RUNNING")
+    langs = [_norm_lang(c) for c in (req.langs or PRETRANSLATE_LANGS) if c != "en"]
+    _pt_job.clear()
+    _pt_job.update({"running": True, "cancel": False, "started_at": datetime.now(timezone.utc).isoformat(), "finished_at": None,
+                    "error": None, "current": None, "order": langs,
+                    "langs": {c: {"code": c, "name": _lang_name(c), "status": "queued", "total": 0, "done": 0, "seeded": 0, "failed": 0} for c in langs}})
+    _pt_task_ref["t"] = asyncio.create_task(_run_pretranslate(langs))
+    return {"ok": True, "langs": langs}
+
+@api.post("/admin/i18n/cancel")
+async def admin_pretranslate_cancel(admin=Depends(get_admin)):
+    if _pt_job.get("running"): _pt_job["cancel"] = True
+    return {"ok": True}
+
+class NotifPreviewReq(BaseModel):
+    lang: str
+    title: str = "It's a match! 💘"
+    body: str = "You and Anna liked each other. Say hello!"
+    cta: str = "View on GiftsDates"
+    link: Optional[str] = "https://giftsdates.com/chats"
+
+@api.post("/admin/i18n/preview-notification")
+async def admin_preview_notification(req: NotifPreviewReq, admin=Depends(get_admin)):
+    """Preview exactly what a user with language `lang` receives by email and SMS."""
+    code = _norm_lang(req.lang)
+    loc = await localize_message(code, req.title, req.body, req.cta)
+    html = _email_cta_html(loc["title"], loc["body"], req.link, loc["cta"] or req.cta, loc["footer"], loc["rtl"]) if req.link \
+        else _email_html(loc["title"], loc["body"], loc["footer"], loc["rtl"])
+    sms = f"{loc['title']} — {loc['body']}" + (f" {req.link}" if req.link else "")
+    return {"lang": code, "subject": f"{loc['title']} · GiftsDates", "html": html, "sms": sms[:600], "rtl": loc["rtl"],
+            "email_configured": bool(EMAIL_KEY), "sms_configured": bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM)}
+
+@api.get("/admin/i18n/status")
+async def admin_pretranslate_status(admin=Depends(get_admin)):
+    job = {k: v for k, v in _pt_job.items() if k != "cancel"}
+    if not job.get("langs"):
+        last = await db.i18n_jobs.find_one({"id": "pretranslate"}, {"_id": 0})
+        if last: job = {**last, "running": False}
+    sources = await _all_sources()
+    coverage = []
+    for c in PRETRANSLATE_LANGS:
+        n = await db.ui_translations.count_documents({"lang": c, "ui": {"$ne": False}})
+        coverage.append({"code": c, "name": _lang_name(c), "cached": n})
+    return {"job": job, "total_sources": len(sources), "default_langs": PRETRANSLATE_LANGS, "coverage": coverage}
 
 # ---------- Chat ----------
 @api.get("/conversations/{cid}/messages")
@@ -3839,8 +4046,10 @@ DATE_WINDOW_HOURS = 3
 INVITE_MIN_COINS = 150
 DATES_LINK = f"{PUBLIC_APP_URL}/dates"
 
-def _email_cta_html(title, body, link, cta="View on GiftsDates"):
-    base = _email_html(title, body)
+def _email_cta_html(title, body, link, cta="View on GiftsDates", footer=None, rtl=False):
+    from html import escape as _esc
+    cta = _esc(cta)
+    base = _email_html(title, body, footer, rtl)
     if not link:
         return base
     btn = (f'<div style="text-align:center;margin:6px 0 2px"><a href="{link}" style="display:inline-block;'
