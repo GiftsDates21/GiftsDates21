@@ -34,7 +34,7 @@ const VIP_HAIR_COLORS = ["Black", "Dark brown", "Brown", "Light brown", "Blonde"
 const VIP_HAIRCUTS = ["Fully shaved", "Trimmed", "Landing strip", "Bikini line", "Natural / full", "Triangle"];
 const VIP_BREAST_SIZES = ["AA", "A", "B", "C", "D", "DD", "E", "F", "G", "H+", "Natural", "Enhanced"];
 const EXTRA_DEFAULT = { intent: [], kids: [], smoking: [], drinking: [], religion: [], min_income: "", max_income: "", languages: [], bust_sizes: [], min_penis: "", max_penis: "", orientations: [], zodiac: [],
-  min_height: "", max_height: "", min_weight: "", max_weight: "", hobbies: [], job: "", min_date_price: "", max_date_price: "", available_date: "", video_calls: false, premium_only: false, vip_only: false, with_photos: false, verified_only: false, online_now: false,
+  min_height: "", max_height: "", min_weight: "", max_weight: "", hobbies: [], job: "", min_date_price: "", max_date_price: "", min_video_rate: "", max_video_rate: "", available_date: "", video_calls: false, premium_only: false, vip_only: false, with_photos: false, verified_only: false, online_now: false,
   vip_categories: [], vip_services: [], vip_min_price: "", vip_max_price: "", vip_date: "",
   vip_eye_color: ALL, vip_hair_color: ALL, vip_intimate_haircut: ALL, vip_breast_size: ALL,
   vip_min_height: "", vip_max_height: "", vip_min_weight: "", vip_max_weight: "",
@@ -42,7 +42,7 @@ const EXTRA_DEFAULT = { intent: [], kids: [], smoking: [], drinking: [], religio
   vip_price1h_min: "", vip_price1h_max: "", vip_price2h_min: "", vip_price2h_max: "", vip_price3h_min: "", vip_price3h_max: "" };
 
 // Premium-Lite tier filters (looking for, distance, available on date, date price up to)
-const LITE_DEFAULT = { intent: [], max_distance: "", available_date: "", min_date_price: "", max_date_price: "", video_calls: false, sort: "" };
+const LITE_DEFAULT = { intent: [], max_distance: "", available_date: "", min_date_price: "", max_date_price: "", min_video_rate: "", max_video_rate: "", video_calls: false, sort: "" };
 // Full Premium filters = everything else in EXTRA_DEFAULT + search by name
 const PREMIUM_DEFAULT = Object.fromEntries(Object.entries({ ...EXTRA_DEFAULT, q: "" }).filter(([k]) => !(k in LITE_DEFAULT)));
 
@@ -102,6 +102,7 @@ function Toggle({ testid, label, checked, onChange }) {
 export default function Browse() {
   const { lang, user, meta } = useApp();
   const dateCoinsMin = meta?.date_min_coins || 150;
+  const videoCoinsMin = meta?.video_rate || 10;
   const isPremium = user?.premium_until && new Date(user.premium_until) > new Date();
   const hasCoords = user?.lat != null && user?.lng != null;
   const isVip = user?.vip_until && new Date(user.vip_until) > new Date();
@@ -304,6 +305,9 @@ export default function Browse() {
                   <RangeSlider testid="filter-date-coins-range" label={t("max_date_price", lang)} min={dateCoinsMin} max={5000} step={50} disabled={!isLite}
                     lo={filters.min_date_price} hi={filters.max_date_price} anyLabel={t("all", lang)} format={(v) => `🪙 ${v}`}
                     onChange={(a, b) => setFilters(f => ({ ...f, min_date_price: a, max_date_price: b }))} />
+                  <RangeSlider testid="filter-video-coins-range" label={t("video_price", lang)} min={videoCoinsMin} max={200} step={5} disabled={!isLite}
+                    lo={filters.min_video_rate} hi={filters.max_video_rate} anyLabel={t("all", lang)} format={(v) => `🪙 ${v}`}
+                    onChange={(a, b) => setFilters(f => ({ ...f, min_video_rate: a, max_video_rate: b }))} />
                 <div className="min-w-[240px]">
                   <label className="text-xs text-slate-400">{t("sort_by", lang)}</label>
                   <Select disabled={!isLite} value={filters.sort || "recommended"} onValueChange={v => {
