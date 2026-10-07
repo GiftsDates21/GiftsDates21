@@ -101,9 +101,10 @@ export default function ProfileCard({ p, onLike, onGift, onVideo, onDate, onMess
             </div>
           </div>
           {p.bio && <p className="mt-2 text-xs text-slate-400 line-clamp-2">{p.bio}</p>}
-          {(p.relationship_intent || p.height || p.job_title || p.date_price) && (
+          {(p.relationship_intent || p.height || p.job_title || p.date_price || (p.video_rate && p.video_calls_enabled !== false)) && (
             <div className="mt-2 flex flex-wrap gap-1" data-testid={`profile-card-details-${p.id}`}>
               {p.date_price && <span data-testid={`profile-card-date-price-${p.id}`} className="px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-[10px] text-amber-200 font-mono-num">📅 🪙 {p.date_price}</span>}
+              {p.video_rate && p.video_calls_enabled !== false && <span data-testid={`profile-card-video-rate-${p.id}`} className="px-2 py-0.5 rounded-full bg-violet-500/20 border border-violet-500/40 text-[10px] text-violet-200 font-mono-num">📹 🪙 {p.video_rate}/min</span>}
               {(Array.isArray(p.relationship_intent) ? p.relationship_intent : (p.relationship_intent ? [p.relationship_intent] : [])).map(iv => (
                 <span key={iv} className="px-2 py-0.5 rounded-full bg-rose-500/20 border border-rose-500/30 text-[10px] text-rose-200">{optLabel("relationship_intent", iv, lang)}</span>
               ))}

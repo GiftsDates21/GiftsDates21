@@ -1560,7 +1560,7 @@ async def list_profiles(
     online_nearby = False  # "Online nearby" filter removed from search
     # Free: country, city, gender, min/max age.
     # Premium-Lite (and above): looking for (intent), distance, available on date, date price up to.
-    lite_used = any(v not in (None, "", "all", False, 0) for v in (intent, max_distance, available_date, min_date_price, max_date_price, video_calls)) or sort in ("coins_asc", "coins_desc")
+    lite_used = any(v not in (None, "", "all", False, 0) for v in (intent, max_distance, available_date, min_date_price, max_date_price, video_calls)) or sort in ("coins_asc", "coins_desc", "video_asc", "video_desc")
     if lite_used and not has_premium(user): raise HTTPException(403, "PREMIUM_LITE_REQUIRED")
     # Full Premium / VIP: search by name + every other advanced filter.
     advanced_used = any(v not in (None, "", "all", False) for v in (q, hobbies, min_income, max_income, min_penis, max_penis, min_height, max_height, kids, smoking, religion, drinking, income, language, orientation,
@@ -1753,6 +1753,13 @@ async def list_profiles(
     if sort in ("coins_asc", "coins_desc"):
         dmin = (await get_settings())["date_min_coins"]
         results.sort(key=lambda p: int(p.get("date_price") or dmin), reverse=(sort == "coins_desc"))
+    # Video call coins/min sort (effective rate = max(own rate, platform rate)); video calls turned off always go last.
+    if sort in ("video_asc", "video_desc"):
+        vmin = (await get_settings())["video_rate"]
+        on = [p for p in results if p.get("video_calls_enabled") is not False]
+        off = [p for p in results if p.get("video_calls_enabled") is False]
+        on.sort(key=lambda p: max(int(p.get("video_rate") or 0), vmin), reverse=(sort == "video_desc"))
+        results = on + off
     total = len(results)
     start = (page - 1) * page_size
     # Totals are intentionally not exposed — only whether a next page exists.

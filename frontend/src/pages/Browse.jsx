@@ -304,7 +304,7 @@ export default function Browse() {
                   <RangeSlider testid="filter-date-coins-range" label={t("max_date_price", lang)} min={dateCoinsMin} max={5000} step={50} disabled={!isLite}
                     lo={filters.min_date_price} hi={filters.max_date_price} anyLabel={t("all", lang)} format={(v) => `🪙 ${v}`}
                     onChange={(a, b) => setFilters(f => ({ ...f, min_date_price: a, max_date_price: b }))} />
-                <div className="min-w-[210px]">
+                <div className="min-w-[240px]">
                   <label className="text-xs text-slate-400">{t("sort_by", lang)}</label>
                   <Select disabled={!isLite} value={filters.sort || "recommended"} onValueChange={v => {
                     const next = { ...filtersRef.current, sort: v === "recommended" ? "" : v };
@@ -315,6 +315,8 @@ export default function Browse() {
                       <SelectItem value="recommended" data-testid="sort-option-recommended">{t("sort_recommended", lang)}</SelectItem>
                       <SelectItem value="coins_asc" data-testid="sort-option-coins-asc">🪙 {t("sort_coins_asc", lang)}</SelectItem>
                       <SelectItem value="coins_desc" data-testid="sort-option-coins-desc">🪙 {t("sort_coins_desc", lang)}</SelectItem>
+                      <SelectItem value="video_asc" data-testid="sort-option-video-asc">📹 {t("sort_video_asc", lang)}</SelectItem>
+                      <SelectItem value="video_desc" data-testid="sort-option-video-desc">📹 {t("sort_video_desc", lang)}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
