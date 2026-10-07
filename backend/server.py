@@ -1560,7 +1560,7 @@ async def list_profiles(
     online_nearby = False  # "Online nearby" filter removed from search
     # Free: country, city, gender, min/max age.
     # Premium-Lite (and above): looking for (intent), distance, available on date, date price up to.
-    lite_used = any(v not in (None, "", "all", False, 0) for v in (intent, max_distance, available_date, min_date_price, max_date_price, video_calls))
+    lite_used = any(v not in (None, "", "all", False, 0) for v in (intent, max_distance, available_date, min_date_price, max_date_price, video_calls)) or sort in ("coins_asc", "coins_desc")
     if lite_used and not has_premium(user): raise HTTPException(403, "PREMIUM_LITE_REQUIRED")
     # Full Premium / VIP: search by name + every other advanced filter.
     advanced_used = any(v not in (None, "", "all", False) for v in (q, hobbies, min_income, max_income, min_penis, max_penis, min_height, max_height, kids, smoking, religion, drinking, income, language, orientation,
