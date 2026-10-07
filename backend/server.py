@@ -1537,7 +1537,7 @@ async def list_profiles(
     kids: Optional[str] = None, smoking: Optional[str] = None, religion: Optional[str] = None, orientation: Optional[str] = None,
     drinking: Optional[str] = None, income: Optional[str] = None, language: Optional[str] = None,
     hobby: Optional[str] = None, job: Optional[str] = None, min_weight: Optional[int] = None, max_weight: Optional[int] = None,
-    bust_size: Optional[str] = None, penis_size: Optional[str] = None, max_date_price: Optional[int] = None,
+    bust_size: Optional[str] = None, penis_size: Optional[str] = None, min_date_price: Optional[int] = None, max_date_price: Optional[int] = None,
     zodiac: Optional[str] = None, available_date: Optional[str] = None, video_calls: bool = False,
     premium_only: bool = False, vip_only: bool = False, with_photos: bool = False, verified_only: bool = False, online_now: bool = False,
     vip_categories: Optional[str] = None, vip_services: Optional[str] = None, vip_min_price: Optional[int] = None, vip_max_price: Optional[int] = None, vip_date: Optional[str] = None,
@@ -1560,7 +1560,7 @@ async def list_profiles(
     online_nearby = False  # "Online nearby" filter removed from search
     # Free: country, city, gender, min/max age.
     # Premium-Lite (and above): looking for (intent), distance, available on date, date price up to.
-    lite_used = any(v not in (None, "", "all", False, 0) for v in (intent, max_distance, available_date, max_date_price, video_calls))
+    lite_used = any(v not in (None, "", "all", False, 0) for v in (intent, max_distance, available_date, min_date_price, max_date_price, video_calls))
     if lite_used and not has_premium(user): raise HTTPException(403, "PREMIUM_LITE_REQUIRED")
     # Full Premium / VIP: search by name + every other advanced filter.
     advanced_used = any(v not in (None, "", "all", False) for v in (q, hobbies, min_income, max_income, min_penis, max_penis, min_height, max_height, kids, smoking, religion, drinking, income, language, orientation,
@@ -1633,7 +1633,15 @@ async def list_profiles(
             if lo: r["$gte"] = lo
             if hi: r["$lte"] = hi
             conds.append({field: r})
-    if max_date_price: conds.append({"$or": [{"date_price": {"$lte": max_date_price}}, {"date_price": None}, {"date_price": {"$exists": False}}]})
+    # Date coins range. Profiles without their own amount use the platform minimum.
+    if min_date_price or max_date_price:
+        dmin = (await get_settings())["date_min_coins"]
+        unset = [{"date_price": None}, {"date_price": {"$exists": False}}]
+        unset_ok = (not min_date_price or dmin >= min_date_price) and (not max_date_price or dmin <= max_date_price)
+        rng = {}
+        if min_date_price: rng["$gte"] = min_date_price
+        if max_date_price: rng["$lte"] = max_date_price
+        conds.append({"$or": [{"date_price": rng}, *(unset if unset_ok else [])]})
     if with_photos: conds.append({"photos.0": {"$exists": True}})
     if verified_only: conds.append({"verified": True})
     if online_now: conds.append({"last_seen": {"$gt": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()}})
