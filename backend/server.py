@@ -1748,6 +1748,11 @@ async def list_profiles(
     # Nearby sort: closest first (profiles without a distance go last)
     if (sort == "nearby" or online_nearby) and vlat is not None and vlng is not None:
         results.sort(key=lambda p: p.get("distance_km") if p.get("distance_km") is not None else float("inf"))
+    # Date coins sort (members without their own amount count as the platform minimum).
+    # Stable sort keeps Premium/VIP placement order among equal amounts.
+    if sort in ("coins_asc", "coins_desc"):
+        dmin = (await get_settings())["date_min_coins"]
+        results.sort(key=lambda p: int(p.get("date_price") or dmin), reverse=(sort == "coins_desc"))
     total = len(results)
     start = (page - 1) * page_size
     # Totals are intentionally not exposed — only whether a next page exists.

@@ -221,6 +221,20 @@ export default function Browse() {
             <RangeSlider testid="profile-age-range" label={t("age", lang)} min={18} max={99} lo={filters.min_age} hi={filters.max_age} anyLabel={`18 – 99+`}
               onChange={(a, b) => setFilters(f => ({ ...f, min_age: a === "" ? 18 : parseInt(a), max_age: b === "" ? 99 : parseInt(b) }))} />
           </div>
+          <div className="min-w-[200px]">
+            <label className="text-xs text-slate-400">{t("sort_by", lang)}</label>
+            <Select value={filters.sort || "recommended"} onValueChange={v => {
+              const next = { ...filtersRef.current, sort: v === "recommended" ? "" : v };
+              setFilters(next); setSlideDir(""); load(1, next);
+            }}>
+              <SelectTrigger data-testid="profile-sort-select" className="bg-white/5 border-white/10 mt-1"><SelectValue /></SelectTrigger>
+              <SelectContent className="bg-[#161320] border-white/10 text-slate-100">
+                <SelectItem value="recommended" data-testid="sort-option-recommended">{t("sort_recommended", lang)}</SelectItem>
+                <SelectItem value="coins_asc" data-testid="sort-option-coins-asc">🪙 {t("sort_coins_asc", lang)}</SelectItem>
+                <SelectItem value="coins_desc" data-testid="sort-option-coins-desc">🪙 {t("sort_coins_desc", lang)}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
           <Button data-testid="profile-search-submit-button" onClick={() => { setSlideDir(""); load(1); }} disabled={loading} className="rose-btn text-white border-0 px-6"><Search size={15} className="me-1"/> {t("search_btn", lang)}</Button>
           <label className="flex items-center gap-2 text-xs text-red-200 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30 cursor-pointer h-[38px]" data-testid="main-vip-only-wrap">
             <Switch data-testid="main-filter-vip-only" checked={filters.vip_only} onCheckedChange={v => {
