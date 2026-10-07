@@ -34,7 +34,7 @@ const VIP_HAIR_COLORS = ["Black", "Dark brown", "Brown", "Light brown", "Blonde"
 const VIP_HAIRCUTS = ["Fully shaved", "Trimmed", "Landing strip", "Bikini line", "Natural / full", "Triangle"];
 const VIP_BREAST_SIZES = ["AA", "A", "B", "C", "D", "DD", "E", "F", "G", "H+", "Natural", "Enhanced"];
 const EXTRA_DEFAULT = { intent: [], kids: [], smoking: [], drinking: [], religion: [], min_income: "", max_income: "", languages: [], bust_sizes: [], min_penis: "", max_penis: "", orientations: [], zodiac: [],
-  min_height: "", max_height: "", min_weight: "", max_weight: "", hobbies: [], job: "", min_date_price: "", max_date_price: "", min_video_rate: "", max_video_rate: "", available_date: "", video_calls: false, premium_only: false, vip_only: false, with_photos: false, verified_only: false, online_now: false,
+  min_height: "", max_height: "", min_weight: "", max_weight: "", hobbies: [], job: "", min_date_price: "", max_date_price: "", min_video_rate: "", max_video_rate: "", available_date: "", video_calls: false, premium_only: false, vip_only: false, with_photos: false, verified_only: false, online_now: false, video_now: false,
   vip_categories: [], vip_services: [], vip_min_price: "", vip_max_price: "", vip_date: "",
   vip_eye_color: ALL, vip_hair_color: ALL, vip_intimate_haircut: ALL, vip_breast_size: ALL,
   vip_min_height: "", vip_max_height: "", vip_min_weight: "", vip_max_weight: "",
@@ -420,6 +420,7 @@ export default function Browse() {
               <div className="flex flex-wrap gap-2 items-center">
                 <Toggle testid="filter-premium-only" label={`👑 ${t("premium_only", lang)}`} checked={filters.premium_only} onChange={v => setFilters({ ...filters, premium_only: v })} />
                 <Toggle testid="filter-online-now" label={`🟢 ${t("online_now", lang)}`} checked={filters.online_now} onChange={v => setFilters({ ...filters, online_now: v })} />
+                <Toggle testid="filter-video-now" label={`📹 ${t("video_now", lang)}`} checked={filters.video_now} onChange={v => setFilters({ ...filters, video_now: v })} />
                 <Toggle testid="filter-with-photos" label={`📷 ${t("with_photos", lang)}`} checked={filters.with_photos} onChange={v => setFilters({ ...filters, with_photos: v })} />
                 <Toggle testid="filter-verified-only" label={`✅ ${t("verified_only", lang)}`} checked={filters.verified_only} onChange={v => setFilters({ ...filters, verified_only: v })} />
                 {isPremiumFull && <Button data-testid="profile-filters-reset-button" variant="ghost" onClick={() => setFilters({ ...filters, ...PREMIUM_DEFAULT })} className="text-slate-400 hover:text-white ms-auto">{t("reset", lang)}</Button>}

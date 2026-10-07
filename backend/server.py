@@ -1539,7 +1539,7 @@ async def list_profiles(
     hobby: Optional[str] = None, job: Optional[str] = None, min_weight: Optional[int] = None, max_weight: Optional[int] = None,
     bust_size: Optional[str] = None, penis_size: Optional[str] = None, min_date_price: Optional[int] = None, max_date_price: Optional[int] = None, min_video_rate: Optional[int] = None, max_video_rate: Optional[int] = None,
     zodiac: Optional[str] = None, available_date: Optional[str] = None, video_calls: bool = False,
-    premium_only: bool = False, vip_only: bool = False, with_photos: bool = False, verified_only: bool = False, online_now: bool = False,
+    premium_only: bool = False, vip_only: bool = False, with_photos: bool = False, verified_only: bool = False, online_now: bool = False, video_now: bool = False,
     vip_categories: Optional[str] = None, vip_services: Optional[str] = None, vip_min_price: Optional[int] = None, vip_max_price: Optional[int] = None, vip_date: Optional[str] = None,
     vip_eye_color: Optional[str] = None, vip_hair_color: Optional[str] = None, vip_intimate_haircut: Optional[str] = None, vip_breast_size: Optional[str] = None,
     vip_min_height: Optional[int] = None, vip_max_height: Optional[int] = None, vip_min_weight: Optional[int] = None, vip_max_weight: Optional[int] = None,
@@ -1564,7 +1564,7 @@ async def list_profiles(
     if lite_used and not has_premium(user): raise HTTPException(403, "PREMIUM_LITE_REQUIRED")
     # Full Premium / VIP: search by name + every other advanced filter.
     advanced_used = any(v not in (None, "", "all", False) for v in (q, hobbies, min_income, max_income, min_penis, max_penis, min_height, max_height, kids, smoking, religion, drinking, income, language, orientation,
-                                                                   hobby, job, min_weight, max_weight, bust_size, penis_size, premium_only, with_photos, verified_only, online_now,
+                                                                   hobby, job, min_weight, max_weight, bust_size, penis_size, premium_only, with_photos, verified_only, online_now, video_now,
                                                                    zodiac,
                                                                    vip_categories, vip_min_price, vip_max_price, vip_date))
     if advanced_used and not (is_premium(user) or is_vip(user)): raise HTTPException(403, "PREMIUM_REQUIRED")
@@ -1654,6 +1654,10 @@ async def list_profiles(
     if with_photos: conds.append({"photos.0": {"$exists": True}})
     if verified_only: conds.append({"verified": True})
     if online_now: conds.append({"last_seen": {"$gt": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()}})
+    # Available for a video call now: online in the last 5 minutes AND video calls switched on.
+    if video_now:
+        conds.append({"last_seen": {"$gt": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()}})
+        conds.append({"video_calls_enabled": {"$ne": False}})
     if online_nearby: conds.append({"last_seen": {"$gt": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()}})
     now_iso = datetime.now(timezone.utc).isoformat()
     if premium_only: conds.append({"premium_until": {"$gt": now_iso}})
